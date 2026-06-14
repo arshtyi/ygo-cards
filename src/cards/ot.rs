@@ -15,6 +15,7 @@ struct OtCard {
     id: i64,
     name: String,
     attribute: i64,
+    alias: i64,
 }
 
 #[derive(Debug)]
@@ -22,6 +23,7 @@ struct CardRow {
     id: i64,
     name: Option<String>,
     attribute: i64,
+    alias: i64,
 }
 
 #[derive(Debug)]
@@ -56,7 +58,7 @@ fn read_cards(db_path: &Path) -> Result<Vec<OtCard>> {
     let mut statement = connection
         .prepare(
             "
-            select datas.id, texts.name, datas.attribute
+            select datas.id, texts.name, datas.attribute, datas.alias
             from datas
             left join texts on texts.id = datas.id
             order by datas.id
@@ -69,6 +71,7 @@ fn read_cards(db_path: &Path) -> Result<Vec<OtCard>> {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 attribute: row.get(2)?,
+                alias: row.get(3)?,
             })
         })
         .context("failed to query cards")?;
@@ -109,10 +112,16 @@ fn build_card(row: CardRow) -> Option<OtCard> {
         return None;
     };
 
+    if row.alias < 0 {
+        eprintln!("skip card {}: invalid alias {}", row.id, row.alias);
+        return None;
+    }
+
     Some(OtCard {
         id: row.id,
         name,
         attribute,
+        alias: row.alias,
     })
 }
 
@@ -140,12 +149,13 @@ mod tests {
             id: 89631139,
             name: String::from("Blue-Eyes White Dragon"),
             attribute: 1,
+            alias: 0,
         };
         let json = serde_json::to_string(&card).unwrap();
 
         assert_eq!(
             json,
-            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1}"#
+            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"alias":0}"#
         );
     }
 
