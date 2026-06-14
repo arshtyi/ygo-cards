@@ -24,6 +24,7 @@ struct OtCard {
     name: String,
     attribute: i64,
     image: i64,
+    description: String,
     alias: i64,
     r#type: Vec<&'static str>,
     lf: Vec<i64>,
@@ -33,6 +34,7 @@ struct OtCard {
 struct CardRow {
     id: i64,
     name: Option<String>,
+    description: Option<String>,
     attribute: i64,
     alias: i64,
     card_type: i64,
@@ -82,7 +84,7 @@ fn read_cards(
     let mut statement = connection
         .prepare(
             "
-            select datas.id, texts.name, datas.attribute, datas.alias, datas.type, datas.race
+            select datas.id, texts.name, texts.desc, datas.attribute, datas.alias, datas.type, datas.race
             from datas
             left join texts on texts.id = datas.id
             order by datas.id
@@ -94,10 +96,11 @@ fn read_cards(
             Ok(CardRow {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                attribute: row.get(2)?,
-                alias: row.get(3)?,
-                card_type: row.get(4)?,
-                race: row.get(5)?,
+                description: row.get(2)?,
+                attribute: row.get(3)?,
+                alias: row.get(4)?,
+                card_type: row.get(5)?,
+                race: row.get(6)?,
             })
         })
         .context("failed to query cards")?;
@@ -137,6 +140,11 @@ fn build_card(
         return Ok(None);
     }
 
+    let Some(raw_description) = row.description else {
+        eprintln!("skip card {}: missing description", row.id);
+        return Ok(None);
+    };
+
     let Some(attribute) = normalize_attribute(row.attribute) else {
         eprintln!("skip card {}: invalid attribute {}", row.id, row.attribute);
         return Ok(None);
@@ -152,6 +160,11 @@ fn build_card(
         return Ok(None);
     };
 
+    let Some(description) = normalize_description(&raw_description, &card_type) else {
+        eprintln!("skip card {}: invalid description", row.id);
+        return Ok(None);
+    };
+
     let image = images.resolve(row.id, row.alias)?;
 
     Ok(Some(OtCard {
@@ -159,6 +172,7 @@ fn build_card(
         name,
         attribute,
         image,
+        description,
         alias: row.alias,
         r#type: card_type,
         lf: lf_lists.for_card(row.id, row.alias),
@@ -281,6 +295,24 @@ fn is_image_response(response: &Response) -> bool {
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|content_type| content_type.starts_with("image/"))
+}
+
+fn normalize_description(description: &str, card_type: &[&str]) -> Option<String> {
+    let description = description.replace("\r\n", "\n");
+
+    if !card_type.contains(&"灵摆") {
+        return Some(description);
+    }
+
+    description
+        .split_once("【怪兽效果】")
+        .or_else(|| description.split_once("【怪兽描述】"))
+        .map(|(_, monster_description)| {
+            monster_description
+                .strip_prefix('\n')
+                .unwrap_or(monster_description)
+                .to_string()
+        })
 }
 
 #[derive(Debug)]
@@ -645,6 +677,7 @@ mod tests {
             name: String::from("Blue-Eyes White Dragon"),
             attribute: 1,
             image: 89631139,
+            description: String::from("A legendary dragon."),
             alias: 0,
             r#type: vec!["怪兽", "龙族", "通常"],
             lf: vec![3, 1],
@@ -653,7 +686,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1]}"#
+            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"description":"A legendary dragon.","alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1]}"#
         );
     }
 
@@ -757,5 +790,27 @@ mod tests {
         assert_eq!(resolve_image(100, 200, |id| Ok(id == 200)).unwrap(), 200);
         assert_eq!(resolve_image(100, 0, |_| Ok(false)).unwrap(), 0);
         assert_eq!(resolve_image(100, 200, |_| Ok(false)).unwrap(), 0);
+    }
+
+    #[test]
+    fn normalizes_descriptions() {
+        assert_eq!(
+            normalize_description("line 1\r\nline 2", &["魔法"]).unwrap(),
+            "line 1\nline 2"
+        );
+        assert_eq!(
+            normalize_description("【灵摆效果】P\r\n【怪兽效果】\r\nM\r\nE", &["怪兽", "灵摆"])
+                .unwrap(),
+            "M\nE"
+        );
+        assert_eq!(
+            normalize_description("【灵摆效果】P\r\n【怪兽描述】\r\nM\r\nE", &["怪兽", "灵摆"])
+                .unwrap(),
+            "M\nE"
+        );
+        assert_eq!(
+            normalize_description("missing marker", &["怪兽", "灵摆"]),
+            None
+        );
     }
 }
