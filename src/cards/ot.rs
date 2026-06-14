@@ -37,8 +37,16 @@ struct OtCard {
     atk: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     def: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    level: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rank: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "pendulumScale")]
+    pendulum_scale: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "linkValue")]
     link_value: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "linkMarker")]
+    link_marker: Option<Vec<i64>>,
 }
 
 #[derive(Debug)]
@@ -194,8 +202,24 @@ fn build_card(
         eprintln!("skip card {}: invalid def {}", row.id, row.defense);
         return Ok(None);
     };
+    let Some(level) = normalize_level(row.level, &card_type) else {
+        eprintln!("skip card {}: invalid level {}", row.id, row.level);
+        return Ok(None);
+    };
+    let Some(rank) = normalize_rank(row.level, &card_type) else {
+        eprintln!("skip card {}: invalid rank {}", row.id, row.level);
+        return Ok(None);
+    };
+    let Some(pendulum_scale) = normalize_pendulum_scale(row.level, &card_type) else {
+        eprintln!("skip card {}: invalid pendulum scale {}", row.id, row.level);
+        return Ok(None);
+    };
     let Some(link_value) = normalize_link_value(row.level, &card_type) else {
         eprintln!("skip card {}: invalid link value {}", row.id, row.level);
+        return Ok(None);
+    };
+    let Some(link_marker) = normalize_link_marker(row.defense, &card_type) else {
+        eprintln!("skip card {}: invalid link marker {}", row.id, row.defense);
         return Ok(None);
     };
 
@@ -213,7 +237,11 @@ fn build_card(
         lf: lf_lists.for_card(row.id, row.alias),
         atk,
         def,
+        level,
+        rank,
+        pendulum_scale,
         link_value,
+        link_marker,
     }))
 }
 
@@ -398,16 +426,103 @@ fn normalize_def(raw_def: i64, card_type: &[&str]) -> Option<Option<i64>> {
     }
 }
 
+fn normalize_level(raw_level: i64, card_type: &[&str]) -> Option<Option<i64>> {
+    if !card_type.contains(&"怪兽") || card_type.contains(&"超量") || card_type.contains(&"连接")
+    {
+        return Some(None);
+    }
+
+    let level = low_level_byte(raw_level)?;
+    if (0..=13).contains(&level) {
+        Some(Some(level))
+    } else {
+        None
+    }
+}
+
+fn normalize_rank(raw_level: i64, card_type: &[&str]) -> Option<Option<i64>> {
+    if !card_type.contains(&"怪兽") || !card_type.contains(&"超量") {
+        return Some(None);
+    }
+
+    let rank = low_level_byte(raw_level)?;
+    if (0..=13).contains(&rank) {
+        Some(Some(rank))
+    } else {
+        None
+    }
+}
+
+fn normalize_pendulum_scale(raw_level: i64, card_type: &[&str]) -> Option<Option<i64>> {
+    if !card_type.contains(&"怪兽") || !card_type.contains(&"灵摆") {
+        return Some(None);
+    }
+
+    if raw_level < 0 {
+        return None;
+    }
+
+    let rscale = (raw_level >> 16) & 0xff;
+    let lscale = (raw_level >> 24) & 0xff;
+    if rscale != lscale || !(0..=13).contains(&rscale) {
+        return None;
+    }
+
+    Some(Some(rscale))
+}
+
 fn normalize_link_value(raw_level: i64, card_type: &[&str]) -> Option<Option<i64>> {
     if !card_type.contains(&"怪兽") || !card_type.contains(&"连接") {
         return Some(None);
     }
 
-    if (1..=8).contains(&raw_level) {
-        Some(Some(raw_level))
+    let link_value = low_level_byte(raw_level)?;
+    if (1..=8).contains(&link_value) {
+        Some(Some(link_value))
     } else {
         None
     }
+}
+
+fn normalize_link_marker(raw_def: i64, card_type: &[&str]) -> Option<Option<Vec<i64>>> {
+    if !card_type.contains(&"怪兽") || !card_type.contains(&"连接") {
+        return Some(None);
+    }
+
+    if raw_def < 0 || raw_def & !known_link_marker_mask() != 0 {
+        return None;
+    }
+
+    let markers = LINK_MARKER_FLAGS
+        .iter()
+        .filter_map(|(bit, marker)| {
+            if raw_def & bit != 0 {
+                Some(*marker)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if markers.is_empty() {
+        None
+    } else {
+        Some(Some(markers))
+    }
+}
+
+fn low_level_byte(raw_level: i64) -> Option<i64> {
+    if raw_level >= 0 {
+        Some(raw_level & 0xff)
+    } else {
+        None
+    }
+}
+
+fn known_link_marker_mask() -> i64 {
+    LINK_MARKER_FLAGS
+        .iter()
+        .fold(0, |mask, (bit, _)| mask | bit)
 }
 
 #[derive(Debug)]
@@ -761,6 +876,17 @@ const SUBTYPE_FLAGS: &[TypeFlag] = &[
     },
 ];
 
+const LINK_MARKER_FLAGS: &[(i64, i64)] = &[
+    (0x040, 0),
+    (0x008, 1),
+    (0x001, 2),
+    (0x002, 3),
+    (0x004, 4),
+    (0x020, 5),
+    (0x100, 6),
+    (0x080, 7),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -779,13 +905,17 @@ mod tests {
             lf: vec![3, 1],
             atk: Some(3000),
             def: Some(2500),
+            level: Some(8),
+            rank: None,
+            pendulum_scale: None,
             link_value: None,
+            link_marker: None,
         };
         let json = serde_json::to_string(&card).unwrap();
 
         assert_eq!(
             json,
-            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"description":"A legendary dragon.","alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1],"atk":3000,"def":2500}"#
+            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"description":"A legendary dragon.","alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1],"atk":3000,"def":2500,"level":8}"#
         );
     }
 
@@ -956,10 +1086,59 @@ mod tests {
         assert_eq!(normalize_def(0, &["魔法"]), Some(None));
         assert_eq!(normalize_def(-2, &["怪兽", "连接"]), Some(None));
 
-        assert_eq!(normalize_link_value(4, &["怪兽", "连接"]), Some(Some(4)));
+        assert_eq!(
+            normalize_link_value(0x04000004, &["怪兽", "连接"]),
+            Some(Some(4))
+        );
         assert_eq!(normalize_link_value(0, &["怪兽", "连接"]), None);
         assert_eq!(normalize_link_value(9, &["怪兽", "连接"]), None);
         assert_eq!(normalize_link_value(4, &["怪兽"]), Some(None));
         assert_eq!(normalize_link_value(4, &["魔法"]), Some(None));
+    }
+
+    #[test]
+    fn normalizes_monster_level_rank_and_pendulum_scale() {
+        assert_eq!(normalize_level(8, &["怪兽"]), Some(Some(8)));
+        assert_eq!(normalize_level(0x0d000008, &["怪兽"]), Some(Some(8)));
+        assert_eq!(normalize_level(14, &["怪兽"]), None);
+        assert_eq!(normalize_level(-1, &["怪兽"]), None);
+        assert_eq!(normalize_level(4, &["怪兽", "超量"]), Some(None));
+        assert_eq!(normalize_level(4, &["怪兽", "连接"]), Some(None));
+        assert_eq!(normalize_level(4, &["魔法"]), Some(None));
+
+        assert_eq!(normalize_rank(4, &["怪兽", "超量"]), Some(Some(4)));
+        assert_eq!(normalize_rank(14, &["怪兽", "超量"]), None);
+        assert_eq!(normalize_rank(4, &["怪兽"]), Some(None));
+
+        let pendulum_level = (8 << 24) | (8 << 16) | 4;
+        assert_eq!(
+            normalize_pendulum_scale(pendulum_level, &["怪兽", "灵摆"]),
+            Some(Some(8))
+        );
+        assert_eq!(
+            normalize_pendulum_scale((7 << 24) | (8 << 16) | 4, &["怪兽", "灵摆"]),
+            None
+        );
+        assert_eq!(
+            normalize_pendulum_scale((14 << 24) | (14 << 16) | 4, &["怪兽", "灵摆"]),
+            None
+        );
+        assert_eq!(normalize_pendulum_scale(4, &["怪兽"]), Some(None));
+    }
+
+    #[test]
+    fn normalizes_link_markers() {
+        assert_eq!(
+            normalize_link_marker(0xaa, &["怪兽", "连接"]),
+            Some(Some(vec![1, 3, 5, 7]))
+        );
+        assert_eq!(
+            normalize_link_marker(0x141, &["怪兽", "连接"]),
+            Some(Some(vec![0, 2, 6]))
+        );
+        assert_eq!(normalize_link_marker(0, &["怪兽", "连接"]), None);
+        assert_eq!(normalize_link_marker(0x200, &["怪兽", "连接"]), None);
+        assert_eq!(normalize_link_marker(0xaa, &["怪兽"]), Some(None));
+        assert_eq!(normalize_link_marker(0xaa, &["魔法"]), Some(None));
     }
 }
