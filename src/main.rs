@@ -24,6 +24,13 @@ fn main() -> Result<()> {
         report.path.display()
     );
 
+    let report = ygo_cards::cards::rd::write_json()?;
+    println!(
+        "wrote {} cards -> {}",
+        report.cards_written,
+        report.path.display()
+    );
+
     Ok(())
 }
 
