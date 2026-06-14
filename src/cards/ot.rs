@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, File},
     path::{Path, PathBuf},
 };
@@ -8,6 +9,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 const CARDS_DB: &str = "assets/ot/cards.cdb";
+const LFLIST: &str = "assets/ot/lflist.conf";
 const OUTPUT_JSON: &str = "output/ot.json";
 
 #[derive(Debug, Serialize)]
@@ -17,6 +19,7 @@ struct OtCard {
     attribute: i64,
     alias: i64,
     r#type: Vec<&'static str>,
+    lf: Vec<i64>,
 }
 
 #[derive(Debug)]
@@ -36,7 +39,8 @@ pub struct WriteReport {
 }
 
 pub fn write_json() -> Result<WriteReport> {
-    let cards = read_cards(Path::new(CARDS_DB))?;
+    let lf_lists = read_lf_lists(Path::new(LFLIST))?;
+    let cards = read_cards(Path::new(CARDS_DB), &lf_lists)?;
     let path = PathBuf::from(OUTPUT_JSON);
 
     if let Some(parent) = path.parent() {
@@ -55,7 +59,7 @@ pub fn write_json() -> Result<WriteReport> {
     })
 }
 
-fn read_cards(db_path: &Path) -> Result<Vec<OtCard>> {
+fn read_cards(db_path: &Path, lf_lists: &LfLists) -> Result<Vec<OtCard>> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open cards database {}", db_path.display()))?;
     let mut statement = connection
@@ -85,7 +89,7 @@ fn read_cards(db_path: &Path) -> Result<Vec<OtCard>> {
     for row in rows {
         match row {
             Ok(row) => {
-                if let Some(card) = build_card(row) {
+                if let Some(card) = build_card(row, lf_lists) {
                     cards.push(card);
                 }
             }
@@ -96,7 +100,7 @@ fn read_cards(db_path: &Path) -> Result<Vec<OtCard>> {
     Ok(cards)
 }
 
-fn build_card(row: CardRow) -> Option<OtCard> {
+fn build_card(row: CardRow, lf_lists: &LfLists) -> Option<OtCard> {
     if row.id <= 0 {
         eprintln!("skip card: invalid id {}", row.id);
         return None;
@@ -133,7 +137,113 @@ fn build_card(row: CardRow) -> Option<OtCard> {
         attribute,
         alias: row.alias,
         r#type: card_type,
+        lf: lf_lists.for_card(row.id),
     })
+}
+
+#[derive(Debug)]
+struct LfLists {
+    ocg: HashMap<i64, i64>,
+    tcg: HashMap<i64, i64>,
+}
+
+impl LfLists {
+    fn for_card(&self, id: i64) -> Vec<i64> {
+        vec![
+            self.ocg.get(&id).copied().unwrap_or(3),
+            self.tcg.get(&id).copied().unwrap_or(3),
+        ]
+    }
+}
+
+fn read_lf_lists(path: &Path) -> Result<LfLists> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("failed to read forbidden list {}", path.display()))?;
+    parse_lf_lists(&text)
+}
+
+fn parse_lf_lists(text: &str) -> Result<LfLists> {
+    let mut ocg = None;
+    let mut tcg = None;
+    let mut current_region = None;
+    let mut current_entries = HashMap::new();
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(name) = line.strip_prefix('!') {
+            finish_lf_list(current_region, &mut current_entries, &mut ocg, &mut tcg);
+            if ocg.is_some() && tcg.is_some() {
+                break;
+            }
+
+            let region = if name.contains("TCG") {
+                LfRegion::Tcg
+            } else {
+                LfRegion::Ocg
+            };
+            current_region = match region {
+                LfRegion::Ocg if ocg.is_none() => Some(region),
+                LfRegion::Tcg if tcg.is_none() => Some(region),
+                _ => None,
+            };
+            continue;
+        }
+
+        if current_region.is_none() || line.starts_with('#') {
+            continue;
+        }
+
+        if let Some((id, count)) = parse_lf_entry(line) {
+            current_entries.insert(id, count);
+        }
+    }
+
+    finish_lf_list(current_region, &mut current_entries, &mut ocg, &mut tcg);
+
+    Ok(LfLists {
+        ocg: ocg.context("missing latest OCG forbidden list")?,
+        tcg: tcg.context("missing latest TCG forbidden list")?,
+    })
+}
+
+fn finish_lf_list(
+    region: Option<LfRegion>,
+    entries: &mut HashMap<i64, i64>,
+    ocg: &mut Option<HashMap<i64, i64>>,
+    tcg: &mut Option<HashMap<i64, i64>>,
+) {
+    match region {
+        Some(LfRegion::Ocg) if ocg.is_none() => {
+            *ocg = Some(std::mem::take(entries));
+        }
+        Some(LfRegion::Tcg) if tcg.is_none() => {
+            *tcg = Some(std::mem::take(entries));
+        }
+        _ => entries.clear(),
+    }
+}
+
+fn parse_lf_entry(line: &str) -> Option<(i64, i64)> {
+    let entry = line.split_once("--").map_or(line, |(entry, _)| entry);
+    let mut parts = entry.split_whitespace();
+    let id = parts.next()?.parse().ok()?;
+    let count = parts.next()?.parse().ok()?;
+
+    if (0..=3).contains(&count) {
+        Some((id, count))
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LfRegion {
+    Ocg,
+    Tcg,
 }
 
 fn normalize_attribute(raw_attribute: i64) -> Option<i64> {
@@ -387,12 +497,13 @@ mod tests {
             attribute: 1,
             alias: 0,
             r#type: vec!["怪兽", "龙族", "通常"],
+            lf: vec![3, 1],
         };
         let json = serde_json::to_string(&card).unwrap();
 
         assert_eq!(
             json,
-            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"alias":0,"type":["怪兽","龙族","通常"]}"#
+            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1]}"#
         );
     }
 
@@ -442,5 +553,42 @@ mod tests {
         assert_eq!(normalize_race(0x2000), Some("龙族"));
         assert_eq!(normalize_race(0x2000000), Some("幻想魔族"));
         assert_eq!(normalize_race(0), None);
+    }
+
+    #[test]
+    fn parses_latest_ocg_and_tcg_lists() {
+        let lists = parse_lf_lists(
+            "
+            #[2026.4][2026.5 TCG]
+            !2026.4
+            #forbidden
+            11111111 0 --A
+            #limit
+            22222222 1 --B
+            !2026.5 TCG
+            #semi limit
+            22222222 2 --B
+            33333333 0 --C
+            !2026.1
+            11111111 3 --old
+            ",
+        )
+        .unwrap();
+
+        assert_eq!(lists.for_card(11111111), vec![0, 3]);
+        assert_eq!(lists.for_card(22222222), vec![1, 2]);
+        assert_eq!(lists.for_card(33333333), vec![3, 0]);
+        assert_eq!(lists.for_card(44444444), vec![3, 3]);
+    }
+
+    #[test]
+    fn parses_lf_entry_lines() {
+        assert_eq!(
+            parse_lf_entry("08903700 0 --儀式魔人リリーサー"),
+            Some((8903700, 0))
+        );
+        assert_eq!(parse_lf_entry("5318639 1 --旋风"), Some((5318639, 1)));
+        assert_eq!(parse_lf_entry("#limit"), None);
+        assert_eq!(parse_lf_entry("12345678 4 --invalid"), None);
     }
 }
