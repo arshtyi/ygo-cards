@@ -161,10 +161,7 @@ fn build_card(
         return Ok(None);
     };
 
-    let Some(description) = normalize_description(raw_description) else {
-        eprintln!("skip RD card {}: invalid description", row.id);
-        return Ok(None);
-    };
+    let description = normalize_description(raw_description);
 
     let Some(attribute) = normalize_attribute(row.attribute) else {
         eprintln!(
@@ -259,19 +256,19 @@ fn normalize_maximum_atk(maximum: Option<i64>, raw_description: &str) -> Option<
     parse_maximum_atk(raw_description).map(Some)
 }
 
-fn normalize_description(raw_description: &str) -> Option<String> {
+fn normalize_description(raw_description: &str) -> String {
     let description = normalize_newlines(raw_description);
     let body = if description.starts_with("RD/") {
-        description.split_once('\n')?.1
+        description.split_once('\n').map_or("", |(_, body)| body)
     } else {
         description.as_str()
     };
     let body = strip_leading_description_noise(body);
 
     if body.trim().is_empty() {
-        None
+        String::new()
     } else {
-        Some(body.to_string())
+        body.to_string()
     }
 }
 
@@ -663,28 +660,28 @@ mod tests {
     fn normalizes_descriptions() {
         assert_eq!(
             normalize_description("RD/ECG1-JP008 <传说卡> 【水族】\r\n正文\r\n第二行"),
-            Some(String::from("正文\n第二行"))
+            String::from("正文\n第二行")
         );
         assert_eq!(
             normalize_description("RD/RLP2-JP001 【银河族】\r\n【条件】\r\n\r\n内容"),
-            Some(String::from("【条件】\n内容"))
+            String::from("【条件】\n内容")
         );
         assert_eq!(
             normalize_description(
                 "RD/MAX1-JP002\r\n极大攻击 3500\r\n可以和其他卡集齐作极大召唤。\r\n\r\n【条件】"
             ),
-            Some(String::from("可以和其他卡集齐作极大召唤。\n【条件】"))
+            String::from("可以和其他卡集齐作极大召唤。\n【条件】")
         );
         assert_eq!(
             normalize_description("第一行\r\n第二行"),
-            Some(String::from("第一行\n第二行"))
+            String::from("第一行\n第二行")
         );
         assert_eq!(
             normalize_description("RD/ST01-JP002\r\r\n\r\n【效果】"),
-            Some(String::from("【效果】"))
+            String::from("【效果】")
         );
-        assert_eq!(normalize_description("RD/ONLY"), None);
-        assert_eq!(normalize_description("RD/EMPTY\r\n  "), None);
+        assert_eq!(normalize_description("RD/ONLY"), String::new());
+        assert_eq!(normalize_description("RD/EMPTY\r\n  "), String::new());
     }
 
     #[test]
@@ -994,25 +991,33 @@ mod tests {
             .unwrap()
             .is_none()
         );
-        assert!(
-            build_card(
-                CardRow {
-                    id: 120100001,
-                    name: Some(String::from("大道魔法-爆发")),
-                    description: Some(String::from("RD/SJMP-JP001\r\n  ")),
-                    attribute: 0,
-                    card_type: 0x2,
-                    race: 0,
-                    alias: 0,
-                    atk: 0,
-                    defense: 0,
-                    level: 0,
-                },
-                &lf_list,
-                &mut images
-            )
-            .unwrap()
-            .is_none()
-        );
+    }
+
+    #[test]
+    fn keeps_empty_descriptions() {
+        let lf_list = LfList {
+            entries: HashMap::new(),
+        };
+        let mut images = ImageResolver::new(false).unwrap();
+        let card = build_card(
+            CardRow {
+                id: 120287001,
+                name: Some(String::from("杰拉")),
+                description: Some(String::from("RD/AP01-JP001")),
+                attribute: 0x20,
+                card_type: 0x21,
+                race: 0x8,
+                alias: 0,
+                atk: 2800,
+                defense: 2300,
+                level: 8,
+            },
+            &lf_list,
+            &mut images,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(card.description, "");
     }
 }
