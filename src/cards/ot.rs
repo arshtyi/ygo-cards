@@ -14,12 +14,14 @@ const OUTPUT_JSON: &str = "output/ot.json";
 struct OtCard {
     id: i64,
     name: String,
+    attribute: i64,
 }
 
 #[derive(Debug)]
 struct CardRow {
     id: i64,
     name: Option<String>,
+    attribute: i64,
 }
 
 #[derive(Debug)]
@@ -54,7 +56,7 @@ fn read_cards(db_path: &Path) -> Result<Vec<OtCard>> {
     let mut statement = connection
         .prepare(
             "
-            select datas.id, texts.name
+            select datas.id, texts.name, datas.attribute
             from datas
             left join texts on texts.id = datas.id
             order by datas.id
@@ -66,6 +68,7 @@ fn read_cards(db_path: &Path) -> Result<Vec<OtCard>> {
             Ok(CardRow {
                 id: row.get(0)?,
                 name: row.get(1)?,
+                attribute: row.get(2)?,
             })
         })
         .context("failed to query cards")?;
@@ -101,7 +104,30 @@ fn build_card(row: CardRow) -> Option<OtCard> {
         return None;
     }
 
-    Some(OtCard { id: row.id, name })
+    let Some(attribute) = normalize_attribute(row.attribute) else {
+        eprintln!("skip card {}: invalid attribute {}", row.id, row.attribute);
+        return None;
+    };
+
+    Some(OtCard {
+        id: row.id,
+        name,
+        attribute,
+    })
+}
+
+fn normalize_attribute(raw_attribute: i64) -> Option<i64> {
+    match raw_attribute {
+        0x00 => Some(0),
+        0x40 => Some(0),
+        0x10 => Some(1),
+        0x20 => Some(2),
+        0x08 => Some(3),
+        0x01 => Some(4),
+        0x04 => Some(5),
+        0x02 => Some(6),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -113,9 +139,26 @@ mod tests {
         let card = OtCard {
             id: 89631139,
             name: String::from("Blue-Eyes White Dragon"),
+            attribute: 1,
         };
         let json = serde_json::to_string(&card).unwrap();
 
-        assert_eq!(json, r#"{"id":89631139,"name":"Blue-Eyes White Dragon"}"#);
+        assert_eq!(
+            json,
+            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1}"#
+        );
+    }
+
+    #[test]
+    fn normalizes_attribute_codes() {
+        assert_eq!(normalize_attribute(0x00), Some(0));
+        assert_eq!(normalize_attribute(0x40), Some(0));
+        assert_eq!(normalize_attribute(0x10), Some(1));
+        assert_eq!(normalize_attribute(0x20), Some(2));
+        assert_eq!(normalize_attribute(0x08), Some(3));
+        assert_eq!(normalize_attribute(0x01), Some(4));
+        assert_eq!(normalize_attribute(0x04), Some(5));
+        assert_eq!(normalize_attribute(0x02), Some(6));
+        assert_eq!(normalize_attribute(0x30), None);
     }
 }
