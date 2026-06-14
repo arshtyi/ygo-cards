@@ -8,6 +8,8 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
+use super::images::ImageResolver;
+
 const CARDS_DB: &str = "assets/rd/rd_standard.cdb";
 const LFLIST: &str = "assets/rd/lflist.conf";
 const OUTPUT_JSON: &str = "output/rd.json";
@@ -18,6 +20,7 @@ struct RdCard {
     id: i64,
     name: String,
     attribute: i64,
+    image: i64,
     legend: bool,
     lf: i64,
     alias: i64,
@@ -38,9 +41,15 @@ pub struct WriteReport {
     pub cards_written: usize,
 }
 
-pub fn write_json() -> Result<WriteReport> {
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BuildOptions {
+    pub check_images: bool,
+}
+
+pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
     let lf_list = read_lf_list(Path::new(LFLIST))?;
-    let cards = read_cards(Path::new(CARDS_DB), &lf_list)?;
+    let mut images = ImageResolver::new(options.check_images)?;
+    let cards = read_cards(Path::new(CARDS_DB), &lf_list, &mut images)?;
     let path = PathBuf::from(OUTPUT_JSON);
 
     if let Some(parent) = path.parent() {
@@ -59,7 +68,7 @@ pub fn write_json() -> Result<WriteReport> {
     })
 }
 
-fn read_cards(db_path: &Path, lf_list: &LfList) -> Result<Vec<RdCard>> {
+fn read_cards(db_path: &Path, lf_list: &LfList, images: &mut ImageResolver) -> Result<Vec<RdCard>> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open RD cards database {}", db_path.display()))?;
     let mut statement = connection
@@ -94,7 +103,7 @@ fn read_cards(db_path: &Path, lf_list: &LfList) -> Result<Vec<RdCard>> {
     for row in rows {
         match row {
             Ok(row) => {
-                if let Some(card) = build_card(row, lf_list) {
+                if let Some(card) = build_card(row, lf_list, images)? {
                     cards.push(card);
                 }
             }
@@ -105,20 +114,24 @@ fn read_cards(db_path: &Path, lf_list: &LfList) -> Result<Vec<RdCard>> {
     Ok(cards)
 }
 
-fn build_card(row: CardRow, lf_list: &LfList) -> Option<RdCard> {
+fn build_card(
+    row: CardRow,
+    lf_list: &LfList,
+    images: &mut ImageResolver,
+) -> Result<Option<RdCard>> {
     if row.id <= 0 {
         eprintln!("skip RD card: invalid id {}", row.id);
-        return None;
+        return Ok(None);
     }
 
     let Some(name) = row.name else {
         eprintln!("skip RD card {}: missing name", row.id);
-        return None;
+        return Ok(None);
     };
 
     if name.trim().is_empty() {
         eprintln!("skip RD card {}: empty name", row.id);
-        return None;
+        return Ok(None);
     }
 
     let Some(attribute) = normalize_attribute(row.attribute) else {
@@ -126,22 +139,25 @@ fn build_card(row: CardRow, lf_list: &LfList) -> Option<RdCard> {
             "skip RD card {}: invalid attribute {}",
             row.id, row.attribute
         );
-        return None;
+        return Ok(None);
     };
 
     if row.alias < 0 {
         eprintln!("skip RD card {}: invalid alias {}", row.id, row.alias);
-        return None;
+        return Ok(None);
     }
 
-    Some(RdCard {
+    let image = images.resolve(row.id, row.alias)?;
+
+    Ok(Some(RdCard {
         id: row.id,
         name,
         attribute,
+        image,
         legend: is_legend(row.card_type),
         lf: lf_list.for_card(row.id, row.alias),
         alias: row.alias,
-    })
+    }))
 }
 
 fn normalize_attribute(raw_attribute: i64) -> Option<i64> {
@@ -251,6 +267,7 @@ mod tests {
             id: 120100001,
             name: String::from("大道魔法-爆发"),
             attribute: 0,
+            image: 120100001,
             legend: false,
             lf: 3,
             alias: 0,
@@ -259,7 +276,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"legend":false,"lf":3,"alias":0}"#
+            r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"image":120100001,"legend":false,"lf":3,"alias":0}"#
         );
     }
 
@@ -334,6 +351,7 @@ mod tests {
         let lf_list = LfList {
             entries: HashMap::new(),
         };
+        let mut images = ImageResolver::new(false).unwrap();
 
         assert!(
             build_card(
@@ -344,8 +362,10 @@ mod tests {
                     card_type: 0,
                     alias: 0,
                 },
-                &lf_list
+                &lf_list,
+                &mut images
             )
+            .unwrap()
             .is_none()
         );
         assert!(
@@ -357,8 +377,10 @@ mod tests {
                     card_type: 0,
                     alias: 0,
                 },
-                &lf_list
+                &lf_list,
+                &mut images
             )
+            .unwrap()
             .is_none()
         );
         assert!(
@@ -370,8 +392,10 @@ mod tests {
                     card_type: 0,
                     alias: 0,
                 },
-                &lf_list
+                &lf_list,
+                &mut images
             )
+            .unwrap()
             .is_none()
         );
         assert!(
@@ -383,8 +407,10 @@ mod tests {
                     card_type: 0,
                     alias: 0,
                 },
-                &lf_list
+                &lf_list,
+                &mut images
             )
+            .unwrap()
             .is_none()
         );
         assert!(
@@ -396,8 +422,10 @@ mod tests {
                     card_type: 0,
                     alias: -1,
                 },
-                &lf_list
+                &lf_list,
+                &mut images
             )
+            .unwrap()
             .is_none()
         );
     }

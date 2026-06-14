@@ -24,7 +24,9 @@ fn main() -> Result<()> {
         report.path.display()
     );
 
-    let report = ygo_cards::cards::rd::write_json()?;
+    let report = ygo_cards::cards::rd::write_json(ygo_cards::cards::rd::BuildOptions {
+        check_images: options.check_images,
+    })?;
     println!(
         "wrote {} cards -> {}",
         report.cards_written,
