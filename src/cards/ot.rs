@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs::{self, File},
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::{images::ImageResolver, text::normalize_newlines};
+use super::{LfSummary, WriteReport, images::ImageResolver, text::normalize_newlines};
+use crate::json::write_pretty_sorted;
 
 const CARDS_DB: &str = "assets/ot/cards.cdb";
 const LFLIST: &str = "assets/ot/lflist.conf";
@@ -59,12 +60,6 @@ struct CardRow {
     level: i64,
 }
 
-#[derive(Debug)]
-pub struct WriteReport {
-    pub path: PathBuf,
-    pub cards_written: usize,
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BuildOptions {
     pub check_images: bool,
@@ -73,7 +68,7 @@ pub struct BuildOptions {
 pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
     let lf_lists = read_lf_lists(Path::new(LFLIST))?;
     let mut images = ImageResolver::new(options.check_images)?;
-    let cards = read_cards(Path::new(CARDS_DB), &lf_lists, &mut images)?;
+    let read_report = read_cards(Path::new(CARDS_DB), &lf_lists, &mut images)?;
     let path = PathBuf::from(OUTPUT_JSON);
 
     if let Some(parent) = path.parent() {
@@ -81,24 +76,34 @@ pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
             .with_context(|| format!("failed to create output directory {}", parent.display()))?;
     }
 
-    let file = File::create(&path)
-        .with_context(|| format!("failed to create output file {}", path.display()))?;
-    serde_json::to_writer_pretty(file, &cards)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    write_pretty_sorted(&path, &read_report.cards)?;
 
     Ok(WriteReport {
         path,
-        cards_written: cards.len(),
+        cards_written: read_report.cards.len(),
+        cards_skipped: read_report.cards_skipped,
+        lf_summaries: summarize_lf(&read_report.cards),
+        image_summary: images.summary(),
     })
+}
+
+struct ReadCardsReport {
+    cards: Vec<OtCard>,
+    cards_skipped: usize,
 }
 
 fn read_cards(
     db_path: &Path,
     lf_lists: &LfLists,
     images: &mut ImageResolver,
-) -> Result<Vec<OtCard>> {
+) -> Result<ReadCardsReport> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open cards database {}", db_path.display()))?;
+    let total_rows = connection
+        .query_row("select count(*) from datas", [], |row| row.get::<_, i64>(0))
+        .context("failed to count OT card rows")? as usize;
+    images.start_progress(total_rows, "checking OT images");
+
     let mut statement = connection
         .prepare(
             "
@@ -127,18 +132,29 @@ fn read_cards(
         .context("failed to query cards")?;
 
     let mut cards = Vec::new();
+    let mut cards_skipped = 0;
     for row in rows {
         match row {
             Ok(row) => {
                 if let Some(card) = build_card(row, lf_lists, images)? {
                     cards.push(card);
+                } else {
+                    cards_skipped += 1;
                 }
             }
-            Err(error) => eprintln!("skip card: failed to read row: {error}"),
+            Err(error) => {
+                cards_skipped += 1;
+                eprintln!("skip OT card row: failed to read database row: {error}");
+            }
         }
+        images.advance_progress();
     }
+    images.finish_progress();
 
-    Ok(cards)
+    Ok(ReadCardsReport {
+        cards,
+        cards_skipped,
+    })
 }
 
 fn build_card(
@@ -162,60 +178,96 @@ fn build_card(
     }
 
     let Some(raw_description) = row.description else {
-        eprintln!("skip card {}: missing description", row.id);
+        eprintln!("skip OT card {} ({}): missing description", row.id, name);
         return Ok(None);
     };
 
     let Some(attribute) = normalize_attribute(row.attribute) else {
-        eprintln!("skip card {}: invalid attribute {}", row.id, row.attribute);
+        eprintln!(
+            "skip OT card {} ({}): invalid attribute {} ({:#x})",
+            row.id, name, row.attribute, row.attribute
+        );
         return Ok(None);
     };
 
     if row.alias < 0 {
-        eprintln!("skip card {}: invalid alias {}", row.id, row.alias);
+        eprintln!(
+            "skip OT card {} ({}): invalid alias {}",
+            row.id, name, row.alias
+        );
         return Ok(None);
     }
 
     let Some(card_type) = parse_card_type(row.card_type, row.race) else {
-        eprintln!("skip card {}: invalid type {}", row.id, row.card_type);
+        eprintln!(
+            "skip OT card {} ({}): invalid type {} ({:#x}) or race {} ({:#x})",
+            row.id, name, row.card_type, row.card_type, row.race, row.race
+        );
         return Ok(None);
     };
 
     let Some(description) = normalize_description(&raw_description, &card_type) else {
-        eprintln!("skip card {}: invalid description", row.id);
+        eprintln!(
+            "skip OT card {} ({}): invalid description for type {:?}",
+            row.id, name, card_type
+        );
         return Ok(None);
     };
     let Some(pendulum_description) = normalize_pendulum_description(&raw_description, &card_type)
     else {
-        eprintln!("skip card {}: invalid pendulum description", row.id);
+        eprintln!(
+            "skip OT card {} ({}): invalid pendulum description",
+            row.id, name
+        );
         return Ok(None);
     };
     let Some(atk) = normalize_atk(row.atk, &card_type) else {
-        eprintln!("skip card {}: invalid atk {}", row.id, row.atk);
+        eprintln!(
+            "skip OT card {} ({}): invalid atk {}",
+            row.id, name, row.atk
+        );
         return Ok(None);
     };
     let Some(def) = normalize_def(row.defense, &card_type) else {
-        eprintln!("skip card {}: invalid def {}", row.id, row.defense);
+        eprintln!(
+            "skip OT card {} ({}): invalid def {}",
+            row.id, name, row.defense
+        );
         return Ok(None);
     };
     let Some(level) = normalize_level(row.level, &card_type) else {
-        eprintln!("skip card {}: invalid level {}", row.id, row.level);
+        eprintln!(
+            "skip OT card {} ({}): invalid level {}",
+            row.id, name, row.level
+        );
         return Ok(None);
     };
     let Some(rank) = normalize_rank(row.level, &card_type) else {
-        eprintln!("skip card {}: invalid rank {}", row.id, row.level);
+        eprintln!(
+            "skip OT card {} ({}): invalid rank {}",
+            row.id, name, row.level
+        );
         return Ok(None);
     };
     let Some(pendulum_scale) = normalize_pendulum_scale(row.level, &card_type) else {
-        eprintln!("skip card {}: invalid pendulum scale {}", row.id, row.level);
+        eprintln!(
+            "skip OT card {} ({}): invalid pendulum scale {}",
+            row.id, name, row.level
+        );
         return Ok(None);
     };
     let Some(link_value) = normalize_link_value(row.level, &card_type) else {
-        eprintln!("skip card {}: invalid link value {}", row.id, row.level);
+        eprintln!(
+            "skip OT card {} ({}): invalid link value {}",
+            row.id, name, row.level
+        );
         return Ok(None);
     };
     let Some(link_marker) = normalize_link_marker(row.defense, &card_type) else {
-        eprintln!("skip card {}: invalid link marker {}", row.id, row.defense);
+        eprintln!(
+            "skip OT card {} ({}): invalid link marker {}",
+            row.id, name, row.defense
+        );
         return Ok(None);
     };
 
@@ -239,6 +291,43 @@ fn build_card(
         link_value,
         link_marker,
     }))
+}
+
+fn summarize_lf(cards: &[OtCard]) -> Vec<LfSummary> {
+    let mut ocg = [0; 4];
+    let mut tcg = [0; 4];
+
+    for card in cards {
+        if let Some(limit) = card
+            .lf
+            .first()
+            .and_then(|limit| usize::try_from(*limit).ok())
+        {
+            if let Some(count) = ocg.get_mut(limit) {
+                *count += 1;
+            }
+        }
+        if let Some(limit) = card
+            .lf
+            .get(1)
+            .and_then(|limit| usize::try_from(*limit).ok())
+        {
+            if let Some(count) = tcg.get_mut(limit) {
+                *count += 1;
+            }
+        }
+    }
+
+    vec![
+        LfSummary {
+            label: "OT OCG",
+            counts: ocg,
+        },
+        LfSummary {
+            label: "OT TCG",
+            counts: tcg,
+        },
+    ]
 }
 
 fn normalize_description(description: &str, card_type: &[&str]) -> Option<String> {

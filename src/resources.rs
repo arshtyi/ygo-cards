@@ -56,6 +56,7 @@ struct Resource {
 pub struct DownloadedResource {
     pub path: PathBuf,
     pub bytes: u64,
+    pub attempts: u32,
 }
 
 pub fn download_all() -> Result<Vec<DownloadedResource>> {
@@ -87,7 +88,7 @@ pub fn ensure_all() -> Result<()> {
         .context("failed to build HTTP client")?;
 
     for resource in RESOURCES {
-        if asset_path(resource).exists() {
+        if validate_asset(&asset_path(resource)).is_ok() {
             continue;
         }
 
@@ -104,15 +105,54 @@ fn download_resource(client: &Client, resource: &Resource) -> Result<DownloadedR
             .with_context(|| format!("failed to create asset directory {}", parent.display()))?;
     }
 
-    let mut response = send_with_retries(client, resource)?;
-
     let temp_path = temp_path_for(&path)?;
-    let bytes = write_response(&mut response, &temp_path)
+    let mut last_error = None;
+
+    for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
+        let _ = fs::remove_file(&temp_path);
+        match download_resource_once(client, resource, &path, &temp_path) {
+            Ok(bytes) => {
+                return Ok(DownloadedResource {
+                    path,
+                    bytes,
+                    attempts: attempt,
+                });
+            }
+            Err(error) if attempt < MAX_DOWNLOAD_ATTEMPTS => {
+                let delay = backoff_delay(attempt);
+                eprintln!(
+                    "download attempt {}/{} failed for {}: {error}; retrying in {}s",
+                    attempt,
+                    MAX_DOWNLOAD_ATTEMPTS,
+                    resource.name,
+                    delay.as_secs()
+                );
+                last_error = Some(error);
+                thread::sleep(delay);
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.expect("download loop always records the last error"))
+        .with_context(|| format!("failed to download {}", resource.name))
+}
+
+fn download_resource_once(
+    client: &Client,
+    resource: &Resource,
+    path: &Path,
+    temp_path: &Path,
+) -> Result<u64> {
+    let mut response = send_with_retries(client, resource)?;
+    let expected_length = response.content_length();
+    let bytes = write_response(&mut response, temp_path)
         .with_context(|| format!("failed to write temporary asset {}", temp_path.display()))?;
-    replace_file(&temp_path, &path)
+    validate_download_size(resource, bytes, expected_length)?;
+    replace_file(temp_path, path)
         .with_context(|| format!("failed to move asset into place {}", path.display()))?;
 
-    Ok(DownloadedResource { path, bytes })
+    Ok(bytes)
 }
 
 fn send_with_retries(client: &Client, resource: &Resource) -> Result<Response> {
@@ -184,6 +224,39 @@ fn asset_path(resource: &Resource) -> PathBuf {
     path
 }
 
+fn validate_asset(path: &Path) -> Result<()> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("asset {} is missing", path.display()))?;
+    if metadata.len() == 0 {
+        bail!("asset {} is empty", path.display());
+    }
+
+    Ok(())
+}
+
+fn validate_download_size(
+    resource: &Resource,
+    bytes: u64,
+    expected_length: Option<u64>,
+) -> Result<()> {
+    if bytes == 0 {
+        bail!("downloaded empty asset for {}", resource.name);
+    }
+
+    if let Some(expected_length) = expected_length {
+        if bytes != expected_length {
+            bail!(
+                "downloaded {} bytes for {}, expected {}",
+                bytes,
+                resource.name,
+                expected_length
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn temp_path_for(path: &Path) -> Result<PathBuf> {
     let file_name = path
         .file_name()
@@ -201,11 +274,36 @@ fn write_response(response: &mut impl Read, path: &Path) -> io::Result<u64> {
 }
 
 fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
-    if to.exists() {
-        fs::remove_file(to)?;
+    let backup = backup_path_for(to)?;
+    let had_existing = to.exists();
+
+    if had_existing {
+        let _ = fs::remove_file(&backup);
+        fs::rename(to, &backup)?;
     }
 
-    fs::rename(from, to)
+    match fs::rename(from, to) {
+        Ok(()) => {
+            if had_existing {
+                let _ = fs::remove_file(backup);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if had_existing {
+                let _ = fs::rename(&backup, to);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn backup_path_for(path: &Path) -> io::Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?
+        .to_string_lossy();
+    Ok(path.with_file_name(format!("{file_name}.bak")))
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs::{self, File},
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::{images::ImageResolver, text::normalize_newlines};
+use super::{LfSummary, WriteReport, images::ImageResolver, text::normalize_newlines};
+use crate::json::write_pretty_sorted;
 
 const CARDS_DB: &str = "assets/rd/rd_standard.cdb";
 const LFLIST: &str = "assets/rd/lflist.conf";
@@ -52,12 +53,6 @@ struct CardRow {
     level: i64,
 }
 
-#[derive(Debug)]
-pub struct WriteReport {
-    pub path: PathBuf,
-    pub cards_written: usize,
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BuildOptions {
     pub check_images: bool,
@@ -66,7 +61,7 @@ pub struct BuildOptions {
 pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
     let lf_list = read_lf_list(Path::new(LFLIST))?;
     let mut images = ImageResolver::new(options.check_images)?;
-    let cards = read_cards(Path::new(CARDS_DB), &lf_list, &mut images)?;
+    let read_report = read_cards(Path::new(CARDS_DB), &lf_list, &mut images)?;
     let path = PathBuf::from(OUTPUT_JSON);
 
     if let Some(parent) = path.parent() {
@@ -74,20 +69,47 @@ pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
             .with_context(|| format!("failed to create output directory {}", parent.display()))?;
     }
 
-    let file = File::create(&path)
-        .with_context(|| format!("failed to create output file {}", path.display()))?;
-    serde_json::to_writer_pretty(file, &cards)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    write_pretty_sorted(&path, &read_report.cards)?;
 
     Ok(WriteReport {
         path,
-        cards_written: cards.len(),
+        cards_written: read_report.cards.len(),
+        cards_skipped: read_report.cards_skipped,
+        lf_summaries: summarize_lf(&read_report.cards),
+        image_summary: images.summary(),
     })
 }
 
-fn read_cards(db_path: &Path, lf_list: &LfList, images: &mut ImageResolver) -> Result<Vec<RdCard>> {
+struct ReadCardsReport {
+    cards: Vec<RdCard>,
+    cards_skipped: usize,
+}
+
+fn read_cards(
+    db_path: &Path,
+    lf_list: &LfList,
+    images: &mut ImageResolver,
+) -> Result<ReadCardsReport> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open RD cards database {}", db_path.display()))?;
+    let total_rows = connection
+        .query_row(
+            "
+            select count(*)
+            from datas
+            where datas.id not in (
+                select id from datas order by id limit ?1
+            )
+            and datas.id not in (
+                select id from texts order by id limit ?1
+            )
+            ",
+            [USELESS_HEADER_ROWS],
+            |row| row.get::<_, i64>(0),
+        )
+        .context("failed to count RD card rows")? as usize;
+    images.start_progress(total_rows, "checking RD images");
+
     let mut statement = connection
         .prepare(
             "
@@ -122,18 +144,29 @@ fn read_cards(db_path: &Path, lf_list: &LfList, images: &mut ImageResolver) -> R
         .context("failed to query RD cards")?;
 
     let mut cards = Vec::new();
+    let mut cards_skipped = 0;
     for row in rows {
         match row {
             Ok(row) => {
                 if let Some(card) = build_card(row, lf_list, images)? {
                     cards.push(card);
+                } else {
+                    cards_skipped += 1;
                 }
             }
-            Err(error) => eprintln!("skip RD card: failed to read row: {error}"),
+            Err(error) => {
+                cards_skipped += 1;
+                eprintln!("skip RD card row: failed to read database row: {error}");
+            }
         }
+        images.advance_progress();
     }
+    images.finish_progress();
 
-    Ok(cards)
+    Ok(ReadCardsReport {
+        cards,
+        cards_skipped,
+    })
 }
 
 fn build_card(
@@ -157,7 +190,7 @@ fn build_card(
     }
 
     let Some(raw_description) = row.description.as_deref() else {
-        eprintln!("skip RD card {}: missing description", row.id);
+        eprintln!("skip RD card {} ({}): missing description", row.id, name);
         return Ok(None);
     };
 
@@ -165,21 +198,24 @@ fn build_card(
 
     let Some(attribute) = normalize_attribute(row.attribute) else {
         eprintln!(
-            "skip RD card {}: invalid attribute {}",
-            row.id, row.attribute
+            "skip RD card {} ({}): invalid attribute {} ({:#x})",
+            row.id, name, row.attribute, row.attribute
         );
         return Ok(None);
     };
 
     if row.alias < 0 {
-        eprintln!("skip RD card {}: invalid alias {}", row.id, row.alias);
+        eprintln!(
+            "skip RD card {} ({}): invalid alias {}",
+            row.id, name, row.alias
+        );
         return Ok(None);
     }
 
     let Some(card_type) = parse_card_type(row.card_type, row.race) else {
         eprintln!(
-            "skip RD card {}: invalid type {} or race {}",
-            row.id, row.card_type, row.race
+            "skip RD card {} ({}): invalid type {} ({:#x}) or race {} ({:#x})",
+            row.id, name, row.card_type, row.card_type, row.race, row.race
         );
         return Ok(None);
     };
@@ -189,11 +225,17 @@ fn build_card(
     let defense = monster_value(row.defense, &card_type);
     let level = monster_value(row.level, &card_type);
     let Some(maximum) = normalize_maximum(&name, &card_type, raw_description) else {
-        eprintln!("skip RD card {}: invalid maximum position", row.id);
+        eprintln!(
+            "skip RD card {} ({}): invalid maximum position for type {:?}",
+            row.id, name, card_type
+        );
         return Ok(None);
     };
     let Some(maximum_atk) = normalize_maximum_atk(maximum, raw_description) else {
-        eprintln!("skip RD card {}: invalid maximum atk", row.id);
+        eprintln!(
+            "skip RD card {} ({}): invalid maximum atk for maximum {:?}",
+            row.id, name, maximum
+        );
         return Ok(None);
     };
 
@@ -217,6 +259,23 @@ fn build_card(
 
 fn monster_value(value: i64, card_type: &[&str]) -> Option<i64> {
     card_type.contains(&"怪兽").then_some(value)
+}
+
+fn summarize_lf(cards: &[RdCard]) -> Vec<LfSummary> {
+    let mut counts = [0; 4];
+
+    for card in cards {
+        if let Some(limit) = usize::try_from(card.lf).ok() {
+            if let Some(count) = counts.get_mut(limit) {
+                *count += 1;
+            }
+        }
+    }
+
+    vec![LfSummary {
+        label: "RD",
+        counts,
+    }]
 }
 
 fn normalize_maximum(name: &str, card_type: &[&str], raw_description: &str) -> Option<Option<i64>> {
