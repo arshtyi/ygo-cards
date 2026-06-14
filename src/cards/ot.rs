@@ -25,6 +25,11 @@ struct OtCard {
     attribute: i64,
     image: i64,
     description: String,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "pendulumDescription"
+    )]
+    pendulum_description: Option<String>,
     alias: i64,
     r#type: Vec<&'static str>,
     lf: Vec<i64>,
@@ -164,6 +169,11 @@ fn build_card(
         eprintln!("skip card {}: invalid description", row.id);
         return Ok(None);
     };
+    let Some(pendulum_description) = normalize_pendulum_description(&raw_description, &card_type)
+    else {
+        eprintln!("skip card {}: invalid pendulum description", row.id);
+        return Ok(None);
+    };
 
     let image = images.resolve(row.id, row.alias)?;
 
@@ -173,6 +183,7 @@ fn build_card(
         attribute,
         image,
         description,
+        pendulum_description,
         alias: row.alias,
         r#type: card_type,
         lf: lf_lists.for_card(row.id, row.alias),
@@ -313,6 +324,29 @@ fn normalize_description(description: &str, card_type: &[&str]) -> Option<String
                 .unwrap_or(monster_description)
                 .to_string()
         })
+}
+
+fn normalize_pendulum_description(description: &str, card_type: &[&str]) -> Option<Option<String>> {
+    if !card_type.contains(&"灵摆") {
+        return Some(None);
+    }
+
+    let description = description.replace("\r\n", "\n");
+    let (_, rest) = description.split_once('\n')?;
+    let marker_index = monster_description_marker_index(rest)?;
+    let pendulum_description = rest[..marker_index]
+        .strip_suffix('\n')
+        .unwrap_or(&rest[..marker_index])
+        .to_string();
+
+    Some(Some(pendulum_description))
+}
+
+fn monster_description_marker_index(description: &str) -> Option<usize> {
+    ["【怪兽效果】", "【怪兽描述】"]
+        .iter()
+        .filter_map(|marker| description.find(marker))
+        .min()
 }
 
 #[derive(Debug)]
@@ -678,6 +712,7 @@ mod tests {
             attribute: 1,
             image: 89631139,
             description: String::from("A legendary dragon."),
+            pendulum_description: None,
             alias: 0,
             r#type: vec!["怪兽", "龙族", "通常"],
             lf: vec![3, 1],
@@ -810,6 +845,31 @@ mod tests {
         );
         assert_eq!(
             normalize_description("missing marker", &["怪兽", "灵摆"]),
+            None
+        );
+    }
+
+    #[test]
+    fn normalizes_pendulum_descriptions() {
+        assert_eq!(
+            normalize_pendulum_description("plain", &["魔法"]).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_pendulum_description(
+                "首行\r\nP1\r\nP2\r\n【怪兽效果】\r\nM",
+                &["怪兽", "灵摆"]
+            )
+            .unwrap(),
+            Some(String::from("P1\nP2"))
+        );
+        assert_eq!(
+            normalize_pendulum_description("首行\r\nP1\r\n【怪兽描述】\r\nM", &["怪兽", "灵摆"])
+                .unwrap(),
+            Some(String::from("P1"))
+        );
+        assert_eq!(
+            normalize_pendulum_description("首行\r\nmissing marker", &["怪兽", "灵摆"]),
             None
         );
     }
