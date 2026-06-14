@@ -33,6 +33,8 @@ struct OtCard {
     alias: i64,
     r#type: Vec<&'static str>,
     lf: Vec<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    atk: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -44,6 +46,7 @@ struct CardRow {
     alias: i64,
     card_type: i64,
     race: i64,
+    atk: i64,
 }
 
 #[derive(Debug)]
@@ -89,7 +92,7 @@ fn read_cards(
     let mut statement = connection
         .prepare(
             "
-            select datas.id, texts.name, texts.desc, datas.attribute, datas.alias, datas.type, datas.race
+            select datas.id, texts.name, texts.desc, datas.attribute, datas.alias, datas.type, datas.race, datas.atk
             from datas
             left join texts on texts.id = datas.id
             order by datas.id
@@ -106,6 +109,7 @@ fn read_cards(
                 alias: row.get(4)?,
                 card_type: row.get(5)?,
                 race: row.get(6)?,
+                atk: row.get(7)?,
             })
         })
         .context("failed to query cards")?;
@@ -174,6 +178,10 @@ fn build_card(
         eprintln!("skip card {}: invalid pendulum description", row.id);
         return Ok(None);
     };
+    let Some(atk) = normalize_atk(row.atk, &card_type) else {
+        eprintln!("skip card {}: invalid atk {}", row.id, row.atk);
+        return Ok(None);
+    };
 
     let image = images.resolve(row.id, row.alias)?;
 
@@ -187,6 +195,7 @@ fn build_card(
         alias: row.alias,
         r#type: card_type,
         lf: lf_lists.for_card(row.id, row.alias),
+        atk,
     }))
 }
 
@@ -347,6 +356,15 @@ fn monster_description_marker_index(description: &str) -> Option<usize> {
         .iter()
         .filter_map(|marker| description.find(marker))
         .min()
+}
+
+fn normalize_atk(raw_atk: i64, card_type: &[&str]) -> Option<Option<i64>> {
+    if !card_type.contains(&"怪兽") {
+        return Some(None);
+    }
+
+    let atk = if raw_atk == -2 { -1 } else { raw_atk };
+    if atk >= -1 { Some(Some(atk)) } else { None }
 }
 
 #[derive(Debug)]
@@ -716,12 +734,13 @@ mod tests {
             alias: 0,
             r#type: vec!["怪兽", "龙族", "通常"],
             lf: vec![3, 1],
+            atk: Some(3000),
         };
         let json = serde_json::to_string(&card).unwrap();
 
         assert_eq!(
             json,
-            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"description":"A legendary dragon.","alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1]}"#
+            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"description":"A legendary dragon.","alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1],"atk":3000}"#
         );
     }
 
@@ -872,5 +891,14 @@ mod tests {
             normalize_pendulum_description("首行\r\nmissing marker", &["怪兽", "灵摆"]),
             None
         );
+    }
+
+    #[test]
+    fn normalizes_monster_atk() {
+        assert_eq!(normalize_atk(3000, &["怪兽"]), Some(Some(3000)));
+        assert_eq!(normalize_atk(-2, &["怪兽"]), Some(Some(-1)));
+        assert_eq!(normalize_atk(-1, &["怪兽"]), Some(Some(-1)));
+        assert_eq!(normalize_atk(-3, &["怪兽"]), None);
+        assert_eq!(normalize_atk(0, &["魔法"]), Some(None));
     }
 }
