@@ -137,7 +137,7 @@ fn build_card(row: CardRow, lf_lists: &LfLists) -> Option<OtCard> {
         attribute,
         alias: row.alias,
         r#type: card_type,
-        lf: lf_lists.for_card(row.id),
+        lf: lf_lists.for_card(row.id, row.alias),
     })
 }
 
@@ -148,11 +148,18 @@ struct LfLists {
 }
 
 impl LfLists {
-    fn for_card(&self, id: i64) -> Vec<i64> {
+    fn for_card(&self, id: i64, alias: i64) -> Vec<i64> {
         vec![
-            self.ocg.get(&id).copied().unwrap_or(3),
-            self.tcg.get(&id).copied().unwrap_or(3),
+            self.limit_for(&self.ocg, id, alias),
+            self.limit_for(&self.tcg, id, alias),
         ]
+    }
+
+    fn limit_for(&self, list: &HashMap<i64, i64>, id: i64, alias: i64) -> i64 {
+        list.get(&id)
+            .or_else(|| (alias > 0).then(|| list.get(&alias)).flatten())
+            .copied()
+            .unwrap_or(3)
     }
 }
 
@@ -575,10 +582,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(lists.for_card(11111111), vec![0, 3]);
-        assert_eq!(lists.for_card(22222222), vec![1, 2]);
-        assert_eq!(lists.for_card(33333333), vec![3, 0]);
-        assert_eq!(lists.for_card(44444444), vec![3, 3]);
+        assert_eq!(lists.for_card(11111111, 0), vec![0, 3]);
+        assert_eq!(lists.for_card(22222222, 0), vec![1, 2]);
+        assert_eq!(lists.for_card(33333333, 0), vec![3, 0]);
+        assert_eq!(lists.for_card(44444444, 0), vec![3, 3]);
+        assert_eq!(lists.for_card(55555555, 11111111), vec![0, 3]);
     }
 
     #[test]
