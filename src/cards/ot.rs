@@ -45,9 +45,14 @@ pub struct WriteReport {
     pub cards_written: usize,
 }
 
-pub fn write_json() -> Result<WriteReport> {
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BuildOptions {
+    pub check_images: bool,
+}
+
+pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
     let lf_lists = read_lf_lists(Path::new(LFLIST))?;
-    let mut images = ImageResolver::new()?;
+    let mut images = ImageResolver::new(options.check_images)?;
     let cards = read_cards(Path::new(CARDS_DB), &lf_lists, &mut images)?;
     let path = PathBuf::from(OUTPUT_JSON);
 
@@ -162,29 +167,39 @@ fn build_card(
 
 #[derive(Debug)]
 struct ImageResolver {
-    client: Client,
+    mode: ImageMode,
     cache: HashMap<i64, bool>,
 }
 
 impl ImageResolver {
-    fn new() -> Result<Self> {
-        let client = Client::builder()
-            .user_agent(concat!(
-                env!("CARGO_PKG_NAME"),
-                "/",
-                env!("CARGO_PKG_VERSION")
-            ))
-            .timeout(Duration::from_secs(20))
-            .build()
-            .context("failed to build HTTP image client")?;
+    fn new(check_images: bool) -> Result<Self> {
+        let mode = if check_images {
+            ImageMode::Checking(
+                Client::builder()
+                    .user_agent(concat!(
+                        env!("CARGO_PKG_NAME"),
+                        "/",
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .timeout(Duration::from_secs(20))
+                    .build()
+                    .context("failed to build HTTP image client")?,
+            )
+        } else {
+            ImageMode::UseCardId
+        };
 
         Ok(Self {
-            client,
+            mode,
             cache: HashMap::new(),
         })
     }
 
     fn resolve(&mut self, id: i64, alias: i64) -> Result<i64> {
+        if matches!(self.mode, ImageMode::UseCardId) {
+            return Ok(id);
+        }
+
         resolve_image(id, alias, |image_id| self.exists(image_id))
     }
 
@@ -199,9 +214,12 @@ impl ImageResolver {
     }
 
     fn image_exists(&self, id: i64) -> Result<bool> {
+        let ImageMode::Checking(client) = &self.mode else {
+            return Ok(true);
+        };
+
         let url = image_url(id);
-        let response = self
-            .client
+        let response = client
             .head(&url)
             .send()
             .with_context(|| format!("failed to check image {}", url))?;
@@ -214,8 +232,11 @@ impl ImageResolver {
     }
 
     fn image_exists_with_get(&self, url: &str) -> Result<bool> {
-        let response = self
-            .client
+        let ImageMode::Checking(client) = &self.mode else {
+            return Ok(true);
+        };
+
+        let response = client
             .get(url)
             .header(RANGE, "bytes=0-0")
             .send()
@@ -223,6 +244,12 @@ impl ImageResolver {
 
         Ok(is_image_response(&response))
     }
+}
+
+#[derive(Debug)]
+enum ImageMode {
+    UseCardId,
+    Checking(Client),
 }
 
 fn image_url(id: i64) -> String {
