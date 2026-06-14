@@ -9,12 +9,13 @@ use serde::Serialize;
 
 const CARDS_DB: &str = "assets/rd/rd_standard.cdb";
 const OUTPUT_JSON: &str = "output/rd.json";
-const USELESS_HEADER_ROWS: i64 = 3;
+const USELESS_HEADER_ROWS: i64 = 4;
 
 #[derive(Debug, Serialize)]
 struct RdCard {
     id: i64,
     name: String,
+    attribute: i64,
     alias: i64,
 }
 
@@ -22,6 +23,7 @@ struct RdCard {
 struct CardRow {
     id: i64,
     name: Option<String>,
+    attribute: i64,
     alias: i64,
 }
 
@@ -57,7 +59,7 @@ fn read_cards(db_path: &Path) -> Result<Vec<RdCard>> {
     let mut statement = connection
         .prepare(
             "
-            select datas.id, texts.name, datas.alias
+            select datas.id, texts.name, datas.attribute, datas.alias
             from datas
             left join texts on texts.id = datas.id
             where datas.id not in (
@@ -75,7 +77,8 @@ fn read_cards(db_path: &Path) -> Result<Vec<RdCard>> {
             Ok(CardRow {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                alias: row.get(2)?,
+                attribute: row.get(2)?,
+                alias: row.get(3)?,
             })
         })
         .context("failed to query RD cards")?;
@@ -111,6 +114,14 @@ fn build_card(row: CardRow) -> Option<RdCard> {
         return None;
     }
 
+    let Some(attribute) = normalize_attribute(row.attribute) else {
+        eprintln!(
+            "skip RD card {}: invalid attribute {}",
+            row.id, row.attribute
+        );
+        return None;
+    };
+
     if row.alias < 0 {
         eprintln!("skip RD card {}: invalid alias {}", row.id, row.alias);
         return None;
@@ -119,8 +130,22 @@ fn build_card(row: CardRow) -> Option<RdCard> {
     Some(RdCard {
         id: row.id,
         name,
+        attribute,
         alias: row.alias,
     })
+}
+
+fn normalize_attribute(raw_attribute: i64) -> Option<i64> {
+    match raw_attribute {
+        0x00 => Some(0),
+        0x10 => Some(0),
+        0x20 => Some(1),
+        0x08 => Some(2),
+        0x01 => Some(3),
+        0x04 => Some(4),
+        0x02 => Some(5),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -128,15 +153,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serializes_id_and_name() {
+    fn serializes_general_properties() {
         let card = RdCard {
             id: 120100001,
             name: String::from("大道魔法-爆发"),
+            attribute: 0,
             alias: 0,
         };
         let json = serde_json::to_string(&card).unwrap();
 
-        assert_eq!(json, r#"{"id":120100001,"name":"大道魔法-爆发","alias":0}"#);
+        assert_eq!(
+            json,
+            r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"alias":0}"#
+        );
+    }
+
+    #[test]
+    fn normalizes_attribute_codes() {
+        assert_eq!(normalize_attribute(0x00), Some(0));
+        assert_eq!(normalize_attribute(0x10), Some(0));
+        assert_eq!(normalize_attribute(0x20), Some(1));
+        assert_eq!(normalize_attribute(0x08), Some(2));
+        assert_eq!(normalize_attribute(0x01), Some(3));
+        assert_eq!(normalize_attribute(0x04), Some(4));
+        assert_eq!(normalize_attribute(0x02), Some(5));
+        assert_eq!(normalize_attribute(0x40), None);
     }
 
     #[test]
@@ -145,6 +186,7 @@ mod tests {
             build_card(CardRow {
                 id: 0,
                 name: None,
+                attribute: 0,
                 alias: 0,
             })
             .is_none()
@@ -153,6 +195,7 @@ mod tests {
             build_card(CardRow {
                 id: 120100001,
                 name: None,
+                attribute: 0,
                 alias: 0,
             })
             .is_none()
@@ -161,6 +204,7 @@ mod tests {
             build_card(CardRow {
                 id: 120100001,
                 name: Some(String::from("  ")),
+                attribute: 0,
                 alias: 0,
             })
             .is_none()
@@ -169,6 +213,16 @@ mod tests {
             build_card(CardRow {
                 id: 120100001,
                 name: Some(String::from("大道魔法-爆发")),
+                attribute: 0x40,
+                alias: 0,
+            })
+            .is_none()
+        );
+        assert!(
+            build_card(CardRow {
+                id: 120100001,
+                name: Some(String::from("大道魔法-爆发")),
+                attribute: 0,
                 alias: -1,
             })
             .is_none()
