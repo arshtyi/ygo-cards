@@ -72,11 +72,13 @@ pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
     write_pretty_sorted(&path, &read_report.cards)?;
 
     Ok(WriteReport {
+        label: "RD",
         path,
         cards_written: read_report.cards.len(),
         cards_skipped: read_report.cards_skipped,
         lf_summaries: summarize_lf(&read_report.cards),
         image_summary: images.summary(),
+        image_failures: images.failures().to_vec(),
     })
 }
 
@@ -220,7 +222,7 @@ fn build_card(
         return Ok(None);
     };
 
-    let image = images.resolve(row.id, row.alias)?;
+    let image = images.resolve("RD", row.id, &name, row.alias)?;
     let atk = monster_value(row.atk, &card_type);
     let defense = monster_value(row.defense, &card_type);
     let level = monster_value(row.level, &card_type);

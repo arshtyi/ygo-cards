@@ -6,11 +6,13 @@ pub mod rd;
 
 #[derive(Debug)]
 pub struct WriteReport {
+    pub label: &'static str,
     pub path: std::path::PathBuf,
     pub cards_written: usize,
     pub cards_skipped: usize,
     pub lf_summaries: Vec<LfSummary>,
     pub image_summary: ImageSummary,
+    pub image_failures: Vec<ImageFailure>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,4 +38,12 @@ impl ImageSummary {
     pub fn successful_cards(self) -> usize {
         self.primary_found + self.alias_found
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ImageFailure {
+    pub environment: &'static str,
+    pub id: i64,
+    pub name: String,
+    pub alias: i64,
 }

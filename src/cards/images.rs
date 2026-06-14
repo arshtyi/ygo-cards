@@ -12,7 +12,7 @@ use reqwest::{
     header::{CONTENT_TYPE, RANGE},
 };
 
-use super::ImageSummary;
+use super::{ImageFailure, ImageSummary};
 
 const IMAGE_BASE_URL: &str = "https://images.ygoprodeck.com/images/cards_cropped";
 const MAX_IMAGE_CHECK_ATTEMPTS: u32 = 3;
@@ -22,6 +22,7 @@ pub(crate) struct ImageResolver {
     mode: ImageMode,
     cache: HashMap<i64, bool>,
     summary: ImageSummary,
+    failures: Vec<ImageFailure>,
     progress: Option<ProgressState>,
 }
 
@@ -50,11 +51,18 @@ impl ImageResolver {
                 enabled: check_images,
                 ..ImageSummary::default()
             },
+            failures: Vec::new(),
             progress: None,
         })
     }
 
-    pub(crate) fn resolve(&mut self, id: i64, alias: i64) -> Result<i64> {
+    pub(crate) fn resolve(
+        &mut self,
+        environment: &'static str,
+        id: i64,
+        name: &str,
+        alias: i64,
+    ) -> Result<i64> {
         if matches!(self.mode, ImageMode::UseCardId) {
             return Ok(id);
         }
@@ -67,6 +75,12 @@ impl ImageResolver {
             self.summary.alias_found += 1;
         } else {
             self.summary.missing += 1;
+            self.failures.push(ImageFailure {
+                environment,
+                id,
+                name: name.to_string(),
+                alias,
+            });
         }
 
         Ok(image)
@@ -74,6 +88,10 @@ impl ImageResolver {
 
     pub(crate) fn summary(&self) -> ImageSummary {
         self.summary
+    }
+
+    pub(crate) fn failures(&self) -> &[ImageFailure] {
+        &self.failures
     }
 
     pub(crate) fn start_progress(&mut self, total: usize, label: &'static str) {
