@@ -26,6 +26,12 @@ struct RdCard {
     r#type: Vec<&'static str>,
     lf: i64,
     alias: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    atk: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    def: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    level: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -37,6 +43,9 @@ struct CardRow {
     card_type: i64,
     race: i64,
     alias: i64,
+    atk: i64,
+    defense: i64,
+    level: i64,
 }
 
 #[derive(Debug)]
@@ -78,7 +87,7 @@ fn read_cards(db_path: &Path, lf_list: &LfList, images: &mut ImageResolver) -> R
     let mut statement = connection
         .prepare(
             "
-            select datas.id, texts.name, texts.desc, datas.attribute, datas.type, datas.race, datas.alias
+            select datas.id, texts.name, texts.desc, datas.attribute, datas.type, datas.race, datas.alias, datas.atk, datas.def, datas.level
             from datas
             left join texts on texts.id = datas.id
             where datas.id not in (
@@ -101,6 +110,9 @@ fn read_cards(db_path: &Path, lf_list: &LfList, images: &mut ImageResolver) -> R
                 card_type: row.get(4)?,
                 race: row.get(5)?,
                 alias: row.get(6)?,
+                atk: row.get(7)?,
+                defense: row.get(8)?,
+                level: row.get(9)?,
             })
         })
         .context("failed to query RD cards")?;
@@ -167,6 +179,9 @@ fn build_card(
     };
 
     let image = images.resolve(row.id, row.alias)?;
+    let atk = monster_value(row.atk, &card_type);
+    let defense = monster_value(row.defense, &card_type);
+    let level = monster_value(row.level, &card_type);
 
     Ok(Some(RdCard {
         id: row.id,
@@ -178,7 +193,14 @@ fn build_card(
         r#type: card_type,
         lf: lf_list.for_card(row.id, row.alias),
         alias: row.alias,
+        atk,
+        def: defense,
+        level,
     }))
+}
+
+fn monster_value(value: i64, card_type: &[&str]) -> Option<i64> {
+    card_type.contains(&"怪兽").then_some(value)
 }
 
 fn normalize_description(raw_description: &str) -> Option<String> {
@@ -497,12 +519,39 @@ mod tests {
             r#type: vec!["魔法"],
             lf: 3,
             alias: 0,
+            atk: None,
+            def: None,
+            level: None,
         };
         let json = serde_json::to_string(&card).unwrap();
 
         assert_eq!(
             json,
             r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"image":120100001,"description":"【条件】\n无","legend":false,"type":["魔法"],"lf":3,"alias":0}"#
+        );
+    }
+
+    #[test]
+    fn serializes_monster_stats() {
+        let card = RdCard {
+            id: 120105001,
+            name: String::from("七星道魔术师"),
+            attribute: 0,
+            image: 120105001,
+            description: String::from("【条件】\n无"),
+            legend: false,
+            r#type: vec!["怪兽", "魔法师族", "效果"],
+            lf: 3,
+            alias: 0,
+            atk: Some(2100),
+            def: Some(1500),
+            level: Some(7),
+        };
+        let json = serde_json::to_string(&card).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"id":120105001,"name":"七星道魔术师","attribute":0,"image":120105001,"description":"【条件】\n无","legend":false,"type":["怪兽","魔法师族","效果"],"lf":3,"alias":0,"atk":2100,"def":1500,"level":7}"#
         );
     }
 
@@ -601,6 +650,13 @@ mod tests {
     }
 
     #[test]
+    fn keeps_stats_for_monsters_only() {
+        assert_eq!(monster_value(2100, &["怪兽", "效果"]), Some(2100));
+        assert_eq!(monster_value(0, &["魔法"]), None);
+        assert_eq!(monster_value(0, &["陷阱"]), None);
+    }
+
+    #[test]
     fn parses_forbidden_list_restrictions() {
         let list = parse_lf_list(
             "
@@ -664,6 +720,9 @@ mod tests {
                     card_type: 0,
                     race: 0,
                     alias: 0,
+                    atk: 0,
+                    defense: 0,
+                    level: 0,
                 },
                 &lf_list,
                 &mut images
@@ -681,6 +740,9 @@ mod tests {
                     card_type: 0,
                     race: 0,
                     alias: 0,
+                    atk: 0,
+                    defense: 0,
+                    level: 0,
                 },
                 &lf_list,
                 &mut images
@@ -698,6 +760,9 @@ mod tests {
                     card_type: 0,
                     race: 0,
                     alias: 0,
+                    atk: 0,
+                    defense: 0,
+                    level: 0,
                 },
                 &lf_list,
                 &mut images
@@ -715,6 +780,9 @@ mod tests {
                     card_type: 0,
                     race: 0,
                     alias: 0,
+                    atk: 0,
+                    defense: 0,
+                    level: 0,
                 },
                 &lf_list,
                 &mut images
@@ -732,6 +800,9 @@ mod tests {
                     card_type: 0,
                     race: 0,
                     alias: -1,
+                    atk: 0,
+                    defense: 0,
+                    level: 0,
                 },
                 &lf_list,
                 &mut images
@@ -749,6 +820,9 @@ mod tests {
                     card_type: 0x2,
                     race: 0,
                     alias: 0,
+                    atk: 0,
+                    defense: 0,
+                    level: 0,
                 },
                 &lf_list,
                 &mut images
@@ -766,6 +840,9 @@ mod tests {
                     card_type: 0x2,
                     race: 0,
                     alias: 0,
+                    atk: 0,
+                    defense: 0,
+                    level: 0,
                 },
                 &lf_list,
                 &mut images
