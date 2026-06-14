@@ -32,6 +32,10 @@ struct RdCard {
     def: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     level: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maximum: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "maximumAtk")]
+    maximum_atk: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -152,7 +156,12 @@ fn build_card(
         return Ok(None);
     }
 
-    let Some(description) = row.description.as_deref().and_then(normalize_description) else {
+    let Some(raw_description) = row.description.as_deref() else {
+        eprintln!("skip RD card {}: missing description", row.id);
+        return Ok(None);
+    };
+
+    let Some(description) = normalize_description(raw_description) else {
         eprintln!("skip RD card {}: invalid description", row.id);
         return Ok(None);
     };
@@ -182,6 +191,14 @@ fn build_card(
     let atk = monster_value(row.atk, &card_type);
     let defense = monster_value(row.defense, &card_type);
     let level = monster_value(row.level, &card_type);
+    let Some(maximum) = normalize_maximum(&name, &card_type, raw_description) else {
+        eprintln!("skip RD card {}: invalid maximum position", row.id);
+        return Ok(None);
+    };
+    let Some(maximum_atk) = normalize_maximum_atk(maximum, raw_description) else {
+        eprintln!("skip RD card {}: invalid maximum atk", row.id);
+        return Ok(None);
+    };
 
     Ok(Some(RdCard {
         id: row.id,
@@ -196,11 +213,50 @@ fn build_card(
         atk,
         def: defense,
         level,
+        maximum,
+        maximum_atk,
     }))
 }
 
 fn monster_value(value: i64, card_type: &[&str]) -> Option<i64> {
     card_type.contains(&"怪兽").then_some(value)
+}
+
+fn normalize_maximum(name: &str, card_type: &[&str], raw_description: &str) -> Option<Option<i64>> {
+    if !card_type.contains(&"怪兽") {
+        return Some(None);
+    }
+
+    let mut matched_positions = MAXIMUM_NAME_MARKERS
+        .iter()
+        .filter_map(|(position, markers)| {
+            markers
+                .iter()
+                .any(|marker| name.contains(marker))
+                .then_some(*position)
+        });
+    let first_position = matched_positions.next();
+    if matched_positions.next().is_some() {
+        return None;
+    }
+
+    if first_position.is_some() {
+        return Some(first_position);
+    }
+
+    if card_type.contains(&"极限") && parse_maximum_atk(raw_description).is_some() {
+        Some(Some(1))
+    } else {
+        Some(None)
+    }
+}
+
+fn normalize_maximum_atk(maximum: Option<i64>, raw_description: &str) -> Option<Option<i64>> {
+    if maximum != Some(1) {
+        return Some(None);
+    }
+
+    parse_maximum_atk(raw_description).map(Some)
 }
 
 fn normalize_description(raw_description: &str) -> Option<String> {
@@ -222,7 +278,7 @@ fn normalize_description(raw_description: &str) -> Option<String> {
 fn strip_leading_description_noise(mut description: &str) -> &str {
     loop {
         let (line, rest) = description.split_once('\n').unwrap_or((description, ""));
-        if !is_maximum_attack_noise(line) {
+        if parse_maximum_attack_line(line).is_none() {
             return description;
         }
 
@@ -230,13 +286,25 @@ fn strip_leading_description_noise(mut description: &str) -> &str {
     }
 }
 
-fn is_maximum_attack_noise(line: &str) -> bool {
+fn parse_maximum_atk(raw_description: &str) -> Option<i64> {
+    normalize_newlines(raw_description)
+        .lines()
+        .find_map(parse_maximum_attack_line)
+}
+
+fn parse_maximum_attack_line(line: &str) -> Option<i64> {
     let mut parts = line.split_whitespace();
-    matches!(parts.next(), Some("极大攻击"))
-        && parts
-            .next()
-            .is_some_and(|attack| attack.chars().all(|character| character.is_ascii_digit()))
-        && parts.next().is_none()
+    match parts.next()? {
+        "极大攻击" | "极大攻击力" => {}
+        _ => return None,
+    }
+
+    let attack = parts.next()?.parse().ok()?;
+    if attack >= 0 && parts.next().is_none() {
+        Some(attack)
+    } else {
+        None
+    }
 }
 
 fn normalize_attribute(raw_attribute: i64) -> Option<i64> {
@@ -376,6 +444,12 @@ enum PrimaryType {
 const LEGEND_TYPE_FLAG: i64 = 0x8;
 const FUSION_TYPE_FLAG: i64 = 0x40;
 const RITUAL_TYPE_FLAG: i64 = 0x80;
+
+const MAXIMUM_NAME_MARKERS: &[(i64, &[&str])] = &[
+    (0, &["[L]", "［L］", "［Ｌ］"]),
+    (1, &["[M]", "［M］", "［Ｍ］"]),
+    (2, &["[R]", "［R］", "［Ｒ］"]),
+];
 
 const PRIMARY_TYPE_FLAGS: &[TypeFlag] = &[
     TypeFlag {
@@ -522,6 +596,8 @@ mod tests {
             atk: None,
             def: None,
             level: None,
+            maximum: None,
+            maximum_atk: None,
         };
         let json = serde_json::to_string(&card).unwrap();
 
@@ -546,12 +622,40 @@ mod tests {
             atk: Some(2100),
             def: Some(1500),
             level: Some(7),
+            maximum: None,
+            maximum_atk: None,
         };
         let json = serde_json::to_string(&card).unwrap();
 
         assert_eq!(
             json,
             r#"{"id":120105001,"name":"七星道魔术师","attribute":0,"image":120105001,"description":"【条件】\n无","legend":false,"type":["怪兽","魔法师族","效果"],"lf":3,"alias":0,"atk":2100,"def":1500,"level":7}"#
+        );
+    }
+
+    #[test]
+    fn serializes_maximum_monster_fields() {
+        let card = RdCard {
+            id: 120150002,
+            name: String::from("超魔机神 大霸道王"),
+            attribute: 1,
+            image: 120150002,
+            description: String::from("可以和其他卡集齐作极大召唤。"),
+            legend: false,
+            r#type: vec!["怪兽", "机械族", "极限", "效果"],
+            lf: 3,
+            alias: 0,
+            atk: Some(1900),
+            def: Some(0),
+            level: Some(10),
+            maximum: Some(1),
+            maximum_atk: Some(3500),
+        };
+        let json = serde_json::to_string(&card).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"id":120150002,"name":"超魔机神 大霸道王","attribute":1,"image":120150002,"description":"可以和其他卡集齐作极大召唤。","legend":false,"type":["怪兽","机械族","极限","效果"],"lf":3,"alias":0,"atk":1900,"def":0,"level":10,"maximum":1,"maximumAtk":3500}"#
         );
     }
 
@@ -654,6 +758,66 @@ mod tests {
         assert_eq!(monster_value(2100, &["怪兽", "效果"]), Some(2100));
         assert_eq!(monster_value(0, &["魔法"]), None);
         assert_eq!(monster_value(0, &["陷阱"]), None);
+    }
+
+    #[test]
+    fn normalizes_maximum_positions() {
+        assert_eq!(
+            normalize_maximum("超魔机神 大霸道王［L］", &["怪兽", "极限"], "desc"),
+            Some(Some(0))
+        );
+        assert_eq!(
+            normalize_maximum("超魔机神 大霸道王[M]", &["怪兽", "极限"], "desc"),
+            Some(Some(1))
+        );
+        assert_eq!(
+            normalize_maximum("超魔机神 大霸道王［R］", &["怪兽", "极限"], "desc"),
+            Some(Some(2))
+        );
+        assert_eq!(
+            normalize_maximum(
+                "超魔机神 大霸道王",
+                &["怪兽", "极限"],
+                "RD/MAX1-JP002\r\n极大攻击 3500\r\n正文"
+            ),
+            Some(Some(1))
+        );
+        assert_eq!(
+            normalize_maximum(
+                "外宇宙 安琪利瓦天愿",
+                &["怪兽", "极限"],
+                "RD/ORP3-JP061\r\n手卡的这张卡的卡名变成「破界王帝 外宇宙界愿［L］」。"
+            ),
+            Some(None)
+        );
+        assert_eq!(
+            normalize_maximum("普通魔法[L]", &["魔法"], "RD/X\r\n极大攻击 3500"),
+            Some(None)
+        );
+        assert_eq!(
+            normalize_maximum("异常［L］［R］", &["怪兽", "极限"], "desc"),
+            None
+        );
+    }
+
+    #[test]
+    fn normalizes_maximum_atk() {
+        assert_eq!(
+            normalize_maximum_atk(Some(1), "RD/MAX1-JP002\r\n极大攻击 3500\r\n正文"),
+            Some(Some(3500))
+        );
+        assert_eq!(
+            normalize_maximum_atk(Some(1), "RD/MAX1-JP002\r\n极大攻击力 4000\r\n正文"),
+            Some(Some(4000))
+        );
+        assert_eq!(
+            normalize_maximum_atk(Some(0), "RD/MAX1-JP001\r\n极大攻击 3500"),
+            Some(None)
+        );
+        assert_eq!(
+            normalize_maximum_atk(Some(1), "RD/MAX1-JP002\r\n正文"),
+            None
+        );
     }
 
     #[test]
