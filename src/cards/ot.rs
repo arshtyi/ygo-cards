@@ -13,6 +13,13 @@ const OUTPUT_JSON: &str = "output/ot.json";
 #[derive(Debug, Serialize)]
 struct OtCard {
     id: i64,
+    name: String,
+}
+
+#[derive(Debug)]
+struct CardRow {
+    id: i64,
+    name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -45,22 +52,56 @@ fn read_cards(db_path: &Path) -> Result<Vec<OtCard>> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open cards database {}", db_path.display()))?;
     let mut statement = connection
-        .prepare("select id from datas order by id")
-        .context("failed to prepare card id query")?;
+        .prepare(
+            "
+            select datas.id, texts.name
+            from datas
+            left join texts on texts.id = datas.id
+            order by datas.id
+            ",
+        )
+        .context("failed to prepare card query")?;
     let rows = statement
-        .query_map([], |row| row.get::<_, i64>(0))
-        .context("failed to query card ids")?;
+        .query_map([], |row| {
+            Ok(CardRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+            })
+        })
+        .context("failed to query cards")?;
 
     let mut cards = Vec::new();
     for row in rows {
         match row {
-            Ok(id) if id > 0 => cards.push(OtCard { id }),
-            Ok(id) => eprintln!("skip card: invalid id {id}"),
-            Err(error) => eprintln!("skip card: failed to read id: {error}"),
+            Ok(row) => {
+                if let Some(card) = build_card(row) {
+                    cards.push(card);
+                }
+            }
+            Err(error) => eprintln!("skip card: failed to read row: {error}"),
         }
     }
 
     Ok(cards)
+}
+
+fn build_card(row: CardRow) -> Option<OtCard> {
+    if row.id <= 0 {
+        eprintln!("skip card: invalid id {}", row.id);
+        return None;
+    }
+
+    let Some(name) = row.name else {
+        eprintln!("skip card {}: missing name", row.id);
+        return None;
+    };
+
+    if name.trim().is_empty() {
+        eprintln!("skip card {}: empty name", row.id);
+        return None;
+    }
+
+    Some(OtCard { id: row.id, name })
 }
 
 #[cfg(test)]
@@ -68,10 +109,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serializes_id_as_integer_property() {
-        let card = OtCard { id: 89631139 };
+    fn serializes_general_properties() {
+        let card = OtCard {
+            id: 89631139,
+            name: String::from("Blue-Eyes White Dragon"),
+        };
         let json = serde_json::to_string(&card).unwrap();
 
-        assert_eq!(json, r#"{"id":89631139}"#);
+        assert_eq!(json, r#"{"id":89631139,"name":"Blue-Eyes White Dragon"}"#);
     }
 }
