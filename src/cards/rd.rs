@@ -16,6 +16,7 @@ struct RdCard {
     id: i64,
     name: String,
     attribute: i64,
+    legend: bool,
     alias: i64,
 }
 
@@ -24,6 +25,7 @@ struct CardRow {
     id: i64,
     name: Option<String>,
     attribute: i64,
+    card_type: i64,
     alias: i64,
 }
 
@@ -59,7 +61,7 @@ fn read_cards(db_path: &Path) -> Result<Vec<RdCard>> {
     let mut statement = connection
         .prepare(
             "
-            select datas.id, texts.name, datas.attribute, datas.alias
+            select datas.id, texts.name, datas.attribute, datas.type, datas.alias
             from datas
             left join texts on texts.id = datas.id
             where datas.id not in (
@@ -78,7 +80,8 @@ fn read_cards(db_path: &Path) -> Result<Vec<RdCard>> {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 attribute: row.get(2)?,
-                alias: row.get(3)?,
+                card_type: row.get(3)?,
+                alias: row.get(4)?,
             })
         })
         .context("failed to query RD cards")?;
@@ -131,6 +134,7 @@ fn build_card(row: CardRow) -> Option<RdCard> {
         id: row.id,
         name,
         attribute,
+        legend: is_legend(row.card_type),
         alias: row.alias,
     })
 }
@@ -148,6 +152,10 @@ fn normalize_attribute(raw_attribute: i64) -> Option<i64> {
     }
 }
 
+fn is_legend(raw_type: i64) -> bool {
+    raw_type & 0x8 != 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,14 +166,22 @@ mod tests {
             id: 120100001,
             name: String::from("大道魔法-爆发"),
             attribute: 0,
+            legend: false,
             alias: 0,
         };
         let json = serde_json::to_string(&card).unwrap();
 
         assert_eq!(
             json,
-            r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"alias":0}"#
+            r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"legend":false,"alias":0}"#
         );
+    }
+
+    #[test]
+    fn detects_legend_type_bit() {
+        assert!(is_legend(0x8));
+        assert!(is_legend(0x29));
+        assert!(!is_legend(0x21));
     }
 
     #[test]
@@ -187,6 +203,7 @@ mod tests {
                 id: 0,
                 name: None,
                 attribute: 0,
+                card_type: 0,
                 alias: 0,
             })
             .is_none()
@@ -196,6 +213,7 @@ mod tests {
                 id: 120100001,
                 name: None,
                 attribute: 0,
+                card_type: 0,
                 alias: 0,
             })
             .is_none()
@@ -205,6 +223,7 @@ mod tests {
                 id: 120100001,
                 name: Some(String::from("  ")),
                 attribute: 0,
+                card_type: 0,
                 alias: 0,
             })
             .is_none()
@@ -214,6 +233,7 @@ mod tests {
                 id: 120100001,
                 name: Some(String::from("大道魔法-爆发")),
                 attribute: 0x40,
+                card_type: 0,
                 alias: 0,
             })
             .is_none()
@@ -223,6 +243,7 @@ mod tests {
                 id: 120100001,
                 name: Some(String::from("大道魔法-爆发")),
                 attribute: 0,
+                card_type: 0,
                 alias: -1,
             })
             .is_none()
