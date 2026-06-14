@@ -15,12 +15,14 @@ const USELESS_HEADER_ROWS: i64 = 3;
 struct RdCard {
     id: i64,
     name: String,
+    alias: i64,
 }
 
 #[derive(Debug)]
 struct CardRow {
     id: i64,
     name: Option<String>,
+    alias: i64,
 }
 
 #[derive(Debug)]
@@ -55,7 +57,7 @@ fn read_cards(db_path: &Path) -> Result<Vec<RdCard>> {
     let mut statement = connection
         .prepare(
             "
-            select datas.id, texts.name
+            select datas.id, texts.name, datas.alias
             from datas
             left join texts on texts.id = datas.id
             where datas.id not in (
@@ -73,6 +75,7 @@ fn read_cards(db_path: &Path) -> Result<Vec<RdCard>> {
             Ok(CardRow {
                 id: row.get(0)?,
                 name: row.get(1)?,
+                alias: row.get(2)?,
             })
         })
         .context("failed to query RD cards")?;
@@ -108,7 +111,16 @@ fn build_card(row: CardRow) -> Option<RdCard> {
         return None;
     }
 
-    Some(RdCard { id: row.id, name })
+    if row.alias < 0 {
+        eprintln!("skip RD card {}: invalid alias {}", row.id, row.alias);
+        return None;
+    }
+
+    Some(RdCard {
+        id: row.id,
+        name,
+        alias: row.alias,
+    })
 }
 
 #[cfg(test)]
@@ -120,19 +132,28 @@ mod tests {
         let card = RdCard {
             id: 120100001,
             name: String::from("大道魔法-爆发"),
+            alias: 0,
         };
         let json = serde_json::to_string(&card).unwrap();
 
-        assert_eq!(json, r#"{"id":120100001,"name":"大道魔法-爆发"}"#);
+        assert_eq!(json, r#"{"id":120100001,"name":"大道魔法-爆发","alias":0}"#);
     }
 
     #[test]
     fn rejects_invalid_rows() {
-        assert!(build_card(CardRow { id: 0, name: None }).is_none());
+        assert!(
+            build_card(CardRow {
+                id: 0,
+                name: None,
+                alias: 0,
+            })
+            .is_none()
+        );
         assert!(
             build_card(CardRow {
                 id: 120100001,
                 name: None,
+                alias: 0,
             })
             .is_none()
         );
@@ -140,6 +161,15 @@ mod tests {
             build_card(CardRow {
                 id: 120100001,
                 name: Some(String::from("  ")),
+                alias: 0,
+            })
+            .is_none()
+        );
+        assert!(
+            build_card(CardRow {
+                id: 120100001,
+                name: Some(String::from("大道魔法-爆发")),
+                alias: -1,
             })
             .is_none()
         );
