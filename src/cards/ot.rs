@@ -2,21 +2,28 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
+use reqwest::{
+    blocking::{Client, Response},
+    header::{CONTENT_TYPE, RANGE},
+};
 use rusqlite::Connection;
 use serde::Serialize;
 
 const CARDS_DB: &str = "assets/ot/cards.cdb";
 const LFLIST: &str = "assets/ot/lflist.conf";
 const OUTPUT_JSON: &str = "output/ot.json";
+const IMAGE_BASE_URL: &str = "https://images.ygoprodeck.com/images/cards_cropped";
 
 #[derive(Debug, Serialize)]
 struct OtCard {
     id: i64,
     name: String,
     attribute: i64,
+    image: i64,
     alias: i64,
     r#type: Vec<&'static str>,
     lf: Vec<i64>,
@@ -40,7 +47,8 @@ pub struct WriteReport {
 
 pub fn write_json() -> Result<WriteReport> {
     let lf_lists = read_lf_lists(Path::new(LFLIST))?;
-    let cards = read_cards(Path::new(CARDS_DB), &lf_lists)?;
+    let mut images = ImageResolver::new()?;
+    let cards = read_cards(Path::new(CARDS_DB), &lf_lists, &mut images)?;
     let path = PathBuf::from(OUTPUT_JSON);
 
     if let Some(parent) = path.parent() {
@@ -59,7 +67,11 @@ pub fn write_json() -> Result<WriteReport> {
     })
 }
 
-fn read_cards(db_path: &Path, lf_lists: &LfLists) -> Result<Vec<OtCard>> {
+fn read_cards(
+    db_path: &Path,
+    lf_lists: &LfLists,
+    images: &mut ImageResolver,
+) -> Result<Vec<OtCard>> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open cards database {}", db_path.display()))?;
     let mut statement = connection
@@ -89,7 +101,7 @@ fn read_cards(db_path: &Path, lf_lists: &LfLists) -> Result<Vec<OtCard>> {
     for row in rows {
         match row {
             Ok(row) => {
-                if let Some(card) = build_card(row, lf_lists) {
+                if let Some(card) = build_card(row, lf_lists, images)? {
                     cards.push(card);
                 }
             }
@@ -100,45 +112,148 @@ fn read_cards(db_path: &Path, lf_lists: &LfLists) -> Result<Vec<OtCard>> {
     Ok(cards)
 }
 
-fn build_card(row: CardRow, lf_lists: &LfLists) -> Option<OtCard> {
+fn build_card(
+    row: CardRow,
+    lf_lists: &LfLists,
+    images: &mut ImageResolver,
+) -> Result<Option<OtCard>> {
     if row.id <= 0 {
         eprintln!("skip card: invalid id {}", row.id);
-        return None;
+        return Ok(None);
     }
 
     let Some(name) = row.name else {
         eprintln!("skip card {}: missing name", row.id);
-        return None;
+        return Ok(None);
     };
 
     if name.trim().is_empty() {
         eprintln!("skip card {}: empty name", row.id);
-        return None;
+        return Ok(None);
     }
 
     let Some(attribute) = normalize_attribute(row.attribute) else {
         eprintln!("skip card {}: invalid attribute {}", row.id, row.attribute);
-        return None;
+        return Ok(None);
     };
 
     if row.alias < 0 {
         eprintln!("skip card {}: invalid alias {}", row.id, row.alias);
-        return None;
+        return Ok(None);
     }
 
     let Some(card_type) = parse_card_type(row.card_type, row.race) else {
         eprintln!("skip card {}: invalid type {}", row.id, row.card_type);
-        return None;
+        return Ok(None);
     };
 
-    Some(OtCard {
+    let image = images.resolve(row.id, row.alias)?;
+
+    Ok(Some(OtCard {
         id: row.id,
         name,
         attribute,
+        image,
         alias: row.alias,
         r#type: card_type,
         lf: lf_lists.for_card(row.id, row.alias),
-    })
+    }))
+}
+
+#[derive(Debug)]
+struct ImageResolver {
+    client: Client,
+    cache: HashMap<i64, bool>,
+}
+
+impl ImageResolver {
+    fn new() -> Result<Self> {
+        let client = Client::builder()
+            .user_agent(concat!(
+                env!("CARGO_PKG_NAME"),
+                "/",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .timeout(Duration::from_secs(20))
+            .build()
+            .context("failed to build HTTP image client")?;
+
+        Ok(Self {
+            client,
+            cache: HashMap::new(),
+        })
+    }
+
+    fn resolve(&mut self, id: i64, alias: i64) -> Result<i64> {
+        resolve_image(id, alias, |image_id| self.exists(image_id))
+    }
+
+    fn exists(&mut self, id: i64) -> Result<bool> {
+        if let Some(exists) = self.cache.get(&id) {
+            return Ok(*exists);
+        }
+
+        let exists = self.image_exists(id)?;
+        self.cache.insert(id, exists);
+        Ok(exists)
+    }
+
+    fn image_exists(&self, id: i64) -> Result<bool> {
+        let url = image_url(id);
+        let response = self
+            .client
+            .head(&url)
+            .send()
+            .with_context(|| format!("failed to check image {}", url))?;
+
+        if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+            return self.image_exists_with_get(&url);
+        }
+
+        Ok(is_image_response(&response))
+    }
+
+    fn image_exists_with_get(&self, url: &str) -> Result<bool> {
+        let response = self
+            .client
+            .get(url)
+            .header(RANGE, "bytes=0-0")
+            .send()
+            .with_context(|| format!("failed to check image {}", url))?;
+
+        Ok(is_image_response(&response))
+    }
+}
+
+fn image_url(id: i64) -> String {
+    format!("{IMAGE_BASE_URL}/{id}.jpg")
+}
+
+fn resolve_image(
+    mut id: i64,
+    alias: i64,
+    mut exists: impl FnMut(i64) -> Result<bool>,
+) -> Result<i64> {
+    if exists(id)? {
+        return Ok(id);
+    }
+
+    if alias > 0 && exists(alias)? {
+        id = alias;
+    } else {
+        id = 0;
+    }
+
+    Ok(id)
+}
+
+fn is_image_response(response: &Response) -> bool {
+    response.status().is_success()
+        && response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|content_type| content_type.starts_with("image/"))
 }
 
 #[derive(Debug)]
@@ -502,6 +617,7 @@ mod tests {
             id: 89631139,
             name: String::from("Blue-Eyes White Dragon"),
             attribute: 1,
+            image: 89631139,
             alias: 0,
             r#type: vec!["怪兽", "龙族", "通常"],
             lf: vec![3, 1],
@@ -510,7 +626,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1]}"#
+            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1]}"#
         );
     }
 
@@ -598,5 +714,21 @@ mod tests {
         assert_eq!(parse_lf_entry("5318639 1 --旋风"), Some((5318639, 1)));
         assert_eq!(parse_lf_entry("#limit"), None);
         assert_eq!(parse_lf_entry("12345678 4 --invalid"), None);
+    }
+
+    #[test]
+    fn builds_image_urls() {
+        assert_eq!(
+            image_url(89631139),
+            "https://images.ygoprodeck.com/images/cards_cropped/89631139.jpg"
+        );
+    }
+
+    #[test]
+    fn resolves_image_id_with_alias_fallback() {
+        assert_eq!(resolve_image(100, 200, |id| Ok(id == 100)).unwrap(), 100);
+        assert_eq!(resolve_image(100, 200, |id| Ok(id == 200)).unwrap(), 200);
+        assert_eq!(resolve_image(100, 0, |_| Ok(false)).unwrap(), 0);
+        assert_eq!(resolve_image(100, 200, |_| Ok(false)).unwrap(), 0);
     }
 }
