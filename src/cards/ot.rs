@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::images::ImageResolver;
+use super::{images::ImageResolver, text::normalize_newlines};
 
 const CARDS_DB: &str = "assets/ot/cards.cdb";
 const LFLIST: &str = "assets/ot/lflist.conf";
@@ -242,7 +242,7 @@ fn build_card(
 }
 
 fn normalize_description(description: &str, card_type: &[&str]) -> Option<String> {
-    let description = description.replace("\r\n", "\n");
+    let description = normalize_newlines(description);
 
     if !card_type.contains(&"灵摆") {
         return Some(description);
@@ -264,7 +264,7 @@ fn normalize_pendulum_description(description: &str, card_type: &[&str]) -> Opti
         return Some(None);
     }
 
-    let description = description.replace("\r\n", "\n");
+    let description = normalize_newlines(description);
     let (_, rest) = description.split_once('\n')?;
     let marker_index = monster_description_marker_index(rest)?;
     let pendulum_description = rest[..marker_index]
@@ -886,12 +886,15 @@ mod tests {
     #[test]
     fn normalizes_descriptions() {
         assert_eq!(
-            normalize_description("line 1\r\nline 2", &["魔法"]).unwrap(),
+            normalize_description("line 1\r\n\r\nline 2", &["魔法"]).unwrap(),
             "line 1\nline 2"
         );
         assert_eq!(
-            normalize_description("【灵摆效果】P\r\n【怪兽效果】\r\nM\r\nE", &["怪兽", "灵摆"])
-                .unwrap(),
+            normalize_description(
+                "【灵摆效果】P\r\n【怪兽效果】\r\nM\r\n\r\nE",
+                &["怪兽", "灵摆"]
+            )
+            .unwrap(),
             "M\nE"
         );
         assert_eq!(
@@ -913,7 +916,7 @@ mod tests {
         );
         assert_eq!(
             normalize_pendulum_description(
-                "首行\r\nP1\r\nP2\r\n【怪兽效果】\r\nM",
+                "首行\r\nP1\r\n\r\nP2\r\n【怪兽效果】\r\nM",
                 &["怪兽", "灵摆"]
             )
             .unwrap(),

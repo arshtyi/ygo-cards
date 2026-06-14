@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::images::ImageResolver;
+use super::{images::ImageResolver, text::normalize_newlines};
 
 const CARDS_DB: &str = "assets/rd/rd_standard.cdb";
 const LFLIST: &str = "assets/rd/lflist.conf";
@@ -21,6 +21,7 @@ struct RdCard {
     name: String,
     attribute: i64,
     image: i64,
+    description: String,
     legend: bool,
     r#type: Vec<&'static str>,
     lf: i64,
@@ -31,6 +32,7 @@ struct RdCard {
 struct CardRow {
     id: i64,
     name: Option<String>,
+    description: Option<String>,
     attribute: i64,
     card_type: i64,
     race: i64,
@@ -76,7 +78,7 @@ fn read_cards(db_path: &Path, lf_list: &LfList, images: &mut ImageResolver) -> R
     let mut statement = connection
         .prepare(
             "
-            select datas.id, texts.name, datas.attribute, datas.type, datas.race, datas.alias
+            select datas.id, texts.name, texts.desc, datas.attribute, datas.type, datas.race, datas.alias
             from datas
             left join texts on texts.id = datas.id
             where datas.id not in (
@@ -94,10 +96,11 @@ fn read_cards(db_path: &Path, lf_list: &LfList, images: &mut ImageResolver) -> R
             Ok(CardRow {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                attribute: row.get(2)?,
-                card_type: row.get(3)?,
-                race: row.get(4)?,
-                alias: row.get(5)?,
+                description: row.get(2)?,
+                attribute: row.get(3)?,
+                card_type: row.get(4)?,
+                race: row.get(5)?,
+                alias: row.get(6)?,
             })
         })
         .context("failed to query RD cards")?;
@@ -137,6 +140,11 @@ fn build_card(
         return Ok(None);
     }
 
+    let Some(description) = row.description.as_deref().and_then(normalize_description) else {
+        eprintln!("skip RD card {}: invalid description", row.id);
+        return Ok(None);
+    };
+
     let Some(attribute) = normalize_attribute(row.attribute) else {
         eprintln!(
             "skip RD card {}: invalid attribute {}",
@@ -165,11 +173,48 @@ fn build_card(
         name,
         attribute,
         image,
+        description,
         legend: is_legend(row.card_type),
         r#type: card_type,
         lf: lf_list.for_card(row.id, row.alias),
         alias: row.alias,
     }))
+}
+
+fn normalize_description(raw_description: &str) -> Option<String> {
+    let description = normalize_newlines(raw_description);
+    let body = if description.starts_with("RD/") {
+        description.split_once('\n')?.1
+    } else {
+        description.as_str()
+    };
+    let body = strip_leading_description_noise(body);
+
+    if body.trim().is_empty() {
+        None
+    } else {
+        Some(body.to_string())
+    }
+}
+
+fn strip_leading_description_noise(mut description: &str) -> &str {
+    loop {
+        let (line, rest) = description.split_once('\n').unwrap_or((description, ""));
+        if !is_maximum_attack_noise(line) {
+            return description;
+        }
+
+        description = rest;
+    }
+}
+
+fn is_maximum_attack_noise(line: &str) -> bool {
+    let mut parts = line.split_whitespace();
+    matches!(parts.next(), Some("极大攻击"))
+        && parts
+            .next()
+            .is_some_and(|attack| attack.chars().all(|character| character.is_ascii_digit()))
+        && parts.next().is_none()
 }
 
 fn normalize_attribute(raw_attribute: i64) -> Option<i64> {
@@ -447,6 +492,7 @@ mod tests {
             name: String::from("大道魔法-爆发"),
             attribute: 0,
             image: 120100001,
+            description: String::from("【条件】\n无"),
             legend: false,
             r#type: vec!["魔法"],
             lf: 3,
@@ -456,8 +502,36 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"image":120100001,"legend":false,"type":["魔法"],"lf":3,"alias":0}"#
+            r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"image":120100001,"description":"【条件】\n无","legend":false,"type":["魔法"],"lf":3,"alias":0}"#
         );
+    }
+
+    #[test]
+    fn normalizes_descriptions() {
+        assert_eq!(
+            normalize_description("RD/ECG1-JP008 <传说卡> 【水族】\r\n正文\r\n第二行"),
+            Some(String::from("正文\n第二行"))
+        );
+        assert_eq!(
+            normalize_description("RD/RLP2-JP001 【银河族】\r\n【条件】\r\n\r\n内容"),
+            Some(String::from("【条件】\n内容"))
+        );
+        assert_eq!(
+            normalize_description(
+                "RD/MAX1-JP002\r\n极大攻击 3500\r\n可以和其他卡集齐作极大召唤。\r\n\r\n【条件】"
+            ),
+            Some(String::from("可以和其他卡集齐作极大召唤。\n【条件】"))
+        );
+        assert_eq!(
+            normalize_description("第一行\r\n第二行"),
+            Some(String::from("第一行\n第二行"))
+        );
+        assert_eq!(
+            normalize_description("RD/ST01-JP002\r\r\n\r\n【效果】"),
+            Some(String::from("【效果】"))
+        );
+        assert_eq!(normalize_description("RD/ONLY"), None);
+        assert_eq!(normalize_description("RD/EMPTY\r\n  "), None);
     }
 
     #[test]
@@ -585,6 +659,7 @@ mod tests {
                 CardRow {
                     id: 0,
                     name: None,
+                    description: None,
                     attribute: 0,
                     card_type: 0,
                     race: 0,
@@ -601,6 +676,7 @@ mod tests {
                 CardRow {
                     id: 120100001,
                     name: None,
+                    description: None,
                     attribute: 0,
                     card_type: 0,
                     race: 0,
@@ -617,6 +693,7 @@ mod tests {
                 CardRow {
                     id: 120100001,
                     name: Some(String::from("  ")),
+                    description: None,
                     attribute: 0,
                     card_type: 0,
                     race: 0,
@@ -633,6 +710,7 @@ mod tests {
                 CardRow {
                     id: 120100001,
                     name: Some(String::from("大道魔法-爆发")),
+                    description: Some(String::from("RD/SJMP-JP001\r\n【条件】")),
                     attribute: 0x40,
                     card_type: 0,
                     race: 0,
@@ -649,10 +727,45 @@ mod tests {
                 CardRow {
                     id: 120100001,
                     name: Some(String::from("大道魔法-爆发")),
+                    description: Some(String::from("RD/SJMP-JP001\r\n【条件】")),
                     attribute: 0,
                     card_type: 0,
                     race: 0,
                     alias: -1,
+                },
+                &lf_list,
+                &mut images
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            build_card(
+                CardRow {
+                    id: 120100001,
+                    name: Some(String::from("大道魔法-爆发")),
+                    description: None,
+                    attribute: 0,
+                    card_type: 0x2,
+                    race: 0,
+                    alias: 0,
+                },
+                &lf_list,
+                &mut images
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            build_card(
+                CardRow {
+                    id: 120100001,
+                    name: Some(String::from("大道魔法-爆发")),
+                    description: Some(String::from("RD/SJMP-JP001\r\n  ")),
+                    attribute: 0,
+                    card_type: 0x2,
+                    race: 0,
+                    alias: 0,
                 },
                 &lf_list,
                 &mut images
