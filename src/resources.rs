@@ -43,11 +43,6 @@ const RESOURCES: &[Resource] = &[
         url: "https://code.moenext.com/mycard/ygopro-rush-duel/-/raw/master/lflist.conf",
         path: &["rd", "lflist.conf"],
     },
-    Resource {
-        name: "rd field strings supplement",
-        url: "https://code.moenext.com/mycard/ygopro-rush-duel/-/raw/master/script/RDBase.lua",
-        path: &["rd", "RDBase.lua"],
-    },
 ];
 
 #[derive(Debug)]

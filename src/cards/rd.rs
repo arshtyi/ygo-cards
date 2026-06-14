@@ -22,6 +22,7 @@ struct RdCard {
     attribute: i64,
     image: i64,
     legend: bool,
+    r#type: Vec<&'static str>,
     lf: i64,
     alias: i64,
 }
@@ -32,6 +33,7 @@ struct CardRow {
     name: Option<String>,
     attribute: i64,
     card_type: i64,
+    race: i64,
     alias: i64,
 }
 
@@ -74,7 +76,7 @@ fn read_cards(db_path: &Path, lf_list: &LfList, images: &mut ImageResolver) -> R
     let mut statement = connection
         .prepare(
             "
-            select datas.id, texts.name, datas.attribute, datas.type, datas.alias
+            select datas.id, texts.name, datas.attribute, datas.type, datas.race, datas.alias
             from datas
             left join texts on texts.id = datas.id
             where datas.id not in (
@@ -94,7 +96,8 @@ fn read_cards(db_path: &Path, lf_list: &LfList, images: &mut ImageResolver) -> R
                 name: row.get(1)?,
                 attribute: row.get(2)?,
                 card_type: row.get(3)?,
-                alias: row.get(4)?,
+                race: row.get(4)?,
+                alias: row.get(5)?,
             })
         })
         .context("failed to query RD cards")?;
@@ -147,6 +150,14 @@ fn build_card(
         return Ok(None);
     }
 
+    let Some(card_type) = parse_card_type(row.card_type, row.race) else {
+        eprintln!(
+            "skip RD card {}: invalid type {} or race {}",
+            row.id, row.card_type, row.race
+        );
+        return Ok(None);
+    };
+
     let image = images.resolve(row.id, row.alias)?;
 
     Ok(Some(RdCard {
@@ -155,6 +166,7 @@ fn build_card(
         attribute,
         image,
         legend: is_legend(row.card_type),
+        r#type: card_type,
         lf: lf_list.for_card(row.id, row.alias),
         alias: row.alias,
     }))
@@ -176,6 +188,173 @@ fn normalize_attribute(raw_attribute: i64) -> Option<i64> {
 fn is_legend(raw_type: i64) -> bool {
     raw_type & 0x8 != 0
 }
+
+fn parse_card_type(raw_type: i64, raw_race: i64) -> Option<Vec<&'static str>> {
+    if raw_type < 0 {
+        return None;
+    }
+
+    if raw_type & !known_type_mask() != 0 {
+        return None;
+    }
+
+    let primary = primary_type(raw_type)?;
+    let mut card_type = match primary {
+        PrimaryType::Monster => vec!["怪兽", normalize_race(raw_race)?],
+        PrimaryType::Spell => vec!["魔法"],
+        PrimaryType::Trap => vec!["陷阱"],
+    };
+    card_type.extend(matched_subtype_flags(raw_type, primary));
+
+    Some(card_type)
+}
+
+fn known_type_mask() -> i64 {
+    PRIMARY_TYPE_FLAGS
+        .iter()
+        .chain(SUBTYPE_FLAGS.iter())
+        .fold(LEGEND_TYPE_FLAG, |mask, flag| mask | flag.bit)
+}
+
+fn primary_type(raw_type: i64) -> Option<PrimaryType> {
+    let mut primary = None;
+
+    for (bit, card_type) in [
+        (0x1, PrimaryType::Monster),
+        (0x2, PrimaryType::Spell),
+        (0x4, PrimaryType::Trap),
+    ] {
+        if raw_type & bit == 0 {
+            continue;
+        }
+        if primary.replace(card_type).is_some() {
+            return None;
+        }
+    }
+
+    primary
+}
+
+fn matched_subtype_flags(raw_type: i64, primary: PrimaryType) -> Vec<&'static str> {
+    SUBTYPE_FLAGS
+        .iter()
+        .filter_map(|flag| {
+            if primary == PrimaryType::Monster
+                && raw_type & RITUAL_TYPE_FLAG != 0
+                && flag.bit == FUSION_TYPE_FLAG
+            {
+                return None;
+            }
+
+            if raw_type & flag.bit != 0 {
+                Some(flag.label)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn normalize_race(raw_race: i64) -> Option<&'static str> {
+    match raw_race {
+        0x1 => Some("战士族"),
+        0x2 => Some("魔法师族"),
+        0x4 => Some("天使族"),
+        0x8 => Some("恶魔族"),
+        0x10 => Some("不死族"),
+        0x20 => Some("机械族"),
+        0x40 => Some("水族"),
+        0x80 => Some("炎族"),
+        0x100 => Some("岩石族"),
+        0x200 => Some("鸟兽族"),
+        0x400 => Some("植物族"),
+        0x800 => Some("昆虫族"),
+        0x1000 => Some("雷族"),
+        0x2000 => Some("龙族"),
+        0x4000 => Some("兽族"),
+        0x8000 => Some("兽战士族"),
+        0x10000 => Some("恐龙族"),
+        0x20000 => Some("鱼族"),
+        0x40000 => Some("海龙族"),
+        0x80000 => Some("爬虫类族"),
+        0x100000 => Some("念动力族"),
+        0x200000 => Some("幻神兽族"),
+        0x400000 => Some("创造神族"),
+        0x800000 => Some("幻龙族"),
+        0x1000000 => Some("电子界族"),
+        0x2000000 => Some("幻想魔族"),
+        0x4000000 => Some("魔导骑士族"),
+        0x8000000 => Some("多头龙族"),
+        0x10000000 => Some("欧米茄念动力族"),
+        0x20000000 => Some("天界战士族"),
+        0x40000000 => Some("银河族"),
+        0x80000000 | -0x80000000 => Some("电子人族"),
+        _ => None,
+    }
+}
+
+#[derive(Debug)]
+struct TypeFlag {
+    bit: i64,
+    label: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrimaryType {
+    Monster,
+    Spell,
+    Trap,
+}
+
+const LEGEND_TYPE_FLAG: i64 = 0x8;
+const FUSION_TYPE_FLAG: i64 = 0x40;
+const RITUAL_TYPE_FLAG: i64 = 0x80;
+
+const PRIMARY_TYPE_FLAGS: &[TypeFlag] = &[
+    TypeFlag {
+        bit: 0x1,
+        label: "怪兽",
+    },
+    TypeFlag {
+        bit: 0x2,
+        label: "魔法",
+    },
+    TypeFlag {
+        bit: 0x4,
+        label: "陷阱",
+    },
+];
+
+const SUBTYPE_FLAGS: &[TypeFlag] = &[
+    TypeFlag {
+        bit: 0x80000,
+        label: "场地",
+    },
+    TypeFlag {
+        bit: 0x40000,
+        label: "装备",
+    },
+    TypeFlag {
+        bit: 0x8000,
+        label: "极限",
+    },
+    TypeFlag {
+        bit: RITUAL_TYPE_FLAG,
+        label: "仪式",
+    },
+    TypeFlag {
+        bit: FUSION_TYPE_FLAG,
+        label: "融合",
+    },
+    TypeFlag {
+        bit: 0x20,
+        label: "效果",
+    },
+    TypeFlag {
+        bit: 0x10,
+        label: "通常",
+    },
+];
 
 #[derive(Debug)]
 struct LfList {
@@ -269,6 +448,7 @@ mod tests {
             attribute: 0,
             image: 120100001,
             legend: false,
+            r#type: vec!["魔法"],
             lf: 3,
             alias: 0,
         };
@@ -276,7 +456,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"image":120100001,"legend":false,"lf":3,"alias":0}"#
+            r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"image":120100001,"legend":false,"type":["魔法"],"lf":3,"alias":0}"#
         );
     }
 
@@ -297,6 +477,53 @@ mod tests {
         assert_eq!(normalize_attribute(0x04), Some(4));
         assert_eq!(normalize_attribute(0x02), Some(5));
         assert_eq!(normalize_attribute(0x40), None);
+    }
+
+    #[test]
+    fn parses_type_bits_after_primary_from_high_to_low() {
+        assert_eq!(parse_card_type(0x2, 0), Some(vec!["魔法"]));
+        assert_eq!(parse_card_type(0x80002, 0), Some(vec!["魔法", "场地"]));
+        assert_eq!(parse_card_type(0x40002, 0), Some(vec!["魔法", "装备"]));
+        assert_eq!(parse_card_type(0x82, 0), Some(vec!["魔法", "仪式"]));
+        assert_eq!(parse_card_type(0xc, 0), Some(vec!["陷阱"]));
+        assert_eq!(
+            parse_card_type(0x29, 0x2),
+            Some(vec!["怪兽", "魔法师族", "效果"])
+        );
+        assert_eq!(
+            parse_card_type(0x61, 0x2000),
+            Some(vec!["怪兽", "龙族", "融合", "效果"])
+        );
+        assert_eq!(
+            parse_card_type(0xc1, 0x1),
+            Some(vec!["怪兽", "战士族", "仪式"])
+        );
+        assert_eq!(
+            parse_card_type(0xe1, 0x20000000),
+            Some(vec!["怪兽", "天界战士族", "仪式", "效果"])
+        );
+        assert_eq!(
+            parse_card_type(0x8021, 0x40000000),
+            Some(vec!["怪兽", "银河族", "极限", "效果"])
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_type_bits() {
+        assert_eq!(parse_card_type(0, 0), None);
+        assert_eq!(parse_card_type(0x3, 0), None);
+        assert_eq!(parse_card_type(0x1000001, 0x1), None);
+        assert_eq!(parse_card_type(0x1, 0), None);
+    }
+
+    #[test]
+    fn normalizes_monster_races() {
+        assert_eq!(normalize_race(0x1), Some("战士族"));
+        assert_eq!(normalize_race(0x2000), Some("龙族"));
+        assert_eq!(normalize_race(0x40000000), Some("银河族"));
+        assert_eq!(normalize_race(0x80000000), Some("电子人族"));
+        assert_eq!(normalize_race(-0x80000000), Some("电子人族"));
+        assert_eq!(normalize_race(0), None);
     }
 
     #[test]
@@ -360,6 +587,7 @@ mod tests {
                     name: None,
                     attribute: 0,
                     card_type: 0,
+                    race: 0,
                     alias: 0,
                 },
                 &lf_list,
@@ -375,6 +603,7 @@ mod tests {
                     name: None,
                     attribute: 0,
                     card_type: 0,
+                    race: 0,
                     alias: 0,
                 },
                 &lf_list,
@@ -390,6 +619,7 @@ mod tests {
                     name: Some(String::from("  ")),
                     attribute: 0,
                     card_type: 0,
+                    race: 0,
                     alias: 0,
                 },
                 &lf_list,
@@ -405,6 +635,7 @@ mod tests {
                     name: Some(String::from("大道魔法-爆发")),
                     attribute: 0x40,
                     card_type: 0,
+                    race: 0,
                     alias: 0,
                 },
                 &lf_list,
@@ -420,6 +651,7 @@ mod tests {
                     name: Some(String::from("大道魔法-爆发")),
                     attribute: 0,
                     card_type: 0,
+                    race: 0,
                     alias: -1,
                 },
                 &lf_list,
