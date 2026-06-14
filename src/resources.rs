@@ -80,6 +80,28 @@ pub fn download_all() -> Result<Vec<DownloadedResource>> {
         .collect()
 }
 
+pub fn ensure_all() -> Result<()> {
+    let client = Client::builder()
+        .user_agent(concat!(
+            env!("CARGO_PKG_NAME"),
+            "/",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .context("failed to build HTTP client")?;
+
+    for resource in RESOURCES {
+        if asset_path(resource).exists() {
+            continue;
+        }
+
+        download_resource(&client, resource)?;
+    }
+
+    Ok(())
+}
+
 fn download_resource(client: &Client, resource: &Resource) -> Result<DownloadedResource> {
     let path = asset_path(resource);
     if let Some(parent) = path.parent() {

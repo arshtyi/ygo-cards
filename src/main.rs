@@ -1,15 +1,14 @@
 use anyhow::Result;
 
 fn main() -> Result<()> {
-    let downloaded = ygo_cards::resources::download_all()?;
+    ygo_cards::resources::ensure_all()?;
 
-    for resource in downloaded {
-        println!(
-            "downloaded {:>8} bytes -> {}",
-            resource.bytes,
-            resource.path.display()
-        );
-    }
+    let report = ygo_cards::cards::ot::write_json()?;
+    println!(
+        "wrote {} cards -> {}",
+        report.cards_written,
+        report.path.display()
+    );
 
     Ok(())
 }
