@@ -29,11 +29,6 @@ const RESOURCES: &[Resource] = &[
         path: &["ot", "lflist.conf"],
     },
     Resource {
-        name: "ot field strings",
-        url: "https://raw.githubusercontent.com/purerosefallen/ygopro/master/strings.conf",
-        path: &["ot", "strings.conf"],
-    },
-    Resource {
         name: "rd cards database",
         url: "https://code.moenext.com/mycard/ygopro-rush-duel/-/raw/master/RD%20Standard.cdb",
         path: &["rd", "rd_standard.cdb"],

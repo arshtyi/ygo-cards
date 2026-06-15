@@ -4,7 +4,7 @@
 
 This repository generates normalized card data for two environments:
 
-- OT: OCG/TCG card pool, forbidden lists, and text resources.
+- OT: OCG/TCG card database and forbidden lists.
 - RD: Rush Duel card pool, forbidden list, and Rush-specific field handling.
 
 The generated JSON files are arrays. Each array item is one card object. Object keys are sorted alphabetically.
