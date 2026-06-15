@@ -27,7 +27,7 @@ jobs:
           rustup default stable
 
       - name: Generate card data
-        run: cargo run --release -- --refresh-resources
+        run: cargo run --release -- --refresh-resources --check-images
 
       - name: Verify generated files
         run: |
