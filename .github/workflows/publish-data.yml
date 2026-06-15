@@ -1,0 +1,55 @@
+name: Publish card data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 14 * * 1,5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-card-data
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Generate card data
+        run: cargo run --release -- --refresh-resources
+
+      - name: Verify generated files
+        run: |
+          test -s output/ot.json
+          test -s output/rd.json
+          test -s output/report.md
+
+      - name: Publish latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: latest
+          TITLE: Latest card data
+        run: |
+          set -euo pipefail
+
+          git tag -f "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG" --force
+
+          gh release delete "$TAG" --yes || true
+          gh release create "$TAG" \
+            output/ot.json \
+            output/rd.json \
+            --title "$TITLE" \
+            --notes-file output/report.md \
+            --latest
