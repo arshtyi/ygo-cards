@@ -19,6 +19,15 @@ The generated JSON files are arrays. Each array item is one card object. Object 
 
 Use `--refresh-resources` when a build should force-download the upstream resources.
 
+## Mask Mappings
+
+Current bitmask mappings are versioned under `config/`:
+
+- `config/ot-masks.json`: OT attributes, primary types, subtypes, races, link markers, and token inference bit.
+- `config/rd-masks.json`: RD attributes, primary types, subtypes, races, legend bit, ritual/fusion bits, and maximum name markers.
+
+Mask values can be written as decimal numbers or hexadecimal strings such as `"0x4000000"`.
+
 ## Images
 
 By default, `image` is set to the card ID without network checks.

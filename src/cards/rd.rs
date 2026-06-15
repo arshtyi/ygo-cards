@@ -8,7 +8,12 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::{LfSummary, WriteReport, images::ImageResolver, text::normalize_newlines};
+use super::{
+    LfSummary, WriteReport,
+    images::ImageResolver,
+    masks::{has_label, mapped_label, mapped_value, rd_masks},
+    text::normalize_newlines,
+};
 use crate::json::write_pretty_sorted;
 
 const CARDS_DB: &str = "assets/rd/rd_standard.cdb";
@@ -24,7 +29,7 @@ struct RdCard {
     image: i64,
     description: String,
     legend: bool,
-    r#type: Vec<&'static str>,
+    r#type: Vec<String>,
     lf: i64,
     alias: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -259,8 +264,8 @@ fn build_card(
     }))
 }
 
-fn monster_value(value: i64, card_type: &[&str]) -> Option<i64> {
-    card_type.contains(&"怪兽").then_some(value)
+fn monster_value(value: i64, card_type: &[String]) -> Option<i64> {
+    has_label(card_type, "怪兽").then_some(value)
 }
 
 fn summarize_lf(cards: &[RdCard]) -> Vec<LfSummary> {
@@ -280,19 +285,22 @@ fn summarize_lf(cards: &[RdCard]) -> Vec<LfSummary> {
     }]
 }
 
-fn normalize_maximum(name: &str, card_type: &[&str], raw_description: &str) -> Option<Option<i64>> {
-    if !card_type.contains(&"怪兽") {
+fn normalize_maximum(
+    name: &str,
+    card_type: &[String],
+    raw_description: &str,
+) -> Option<Option<i64>> {
+    if !has_label(card_type, "怪兽") {
         return Some(None);
     }
 
-    let mut matched_positions = MAXIMUM_NAME_MARKERS
-        .iter()
-        .filter_map(|(position, markers)| {
-            markers
-                .iter()
-                .any(|marker| name.contains(marker))
-                .then_some(*position)
-        });
+    let mut matched_positions = rd_masks().maximum_name_markers.iter().filter_map(|entry| {
+        entry
+            .markers
+            .iter()
+            .any(|marker| name.contains(marker))
+            .then_some(entry.value)
+    });
     let first_position = matched_positions.next();
     if matched_positions.next().is_some() {
         return None;
@@ -302,7 +310,7 @@ fn normalize_maximum(name: &str, card_type: &[&str], raw_description: &str) -> O
         return Some(first_position);
     }
 
-    if card_type.contains(&"极限") && parse_maximum_atk(raw_description).is_some() {
+    if has_label(card_type, "极限") && parse_maximum_atk(raw_description).is_some() {
         Some(Some(1))
     } else {
         Some(None)
@@ -366,23 +374,14 @@ fn parse_maximum_attack_line(line: &str) -> Option<i64> {
 }
 
 fn normalize_attribute(raw_attribute: i64) -> Option<i64> {
-    match raw_attribute {
-        0x00 => Some(0),
-        0x10 => Some(0),
-        0x20 => Some(1),
-        0x08 => Some(2),
-        0x01 => Some(3),
-        0x04 => Some(4),
-        0x02 => Some(5),
-        _ => None,
-    }
+    mapped_value(&rd_masks().attributes, raw_attribute)
 }
 
 fn is_legend(raw_type: i64) -> bool {
-    raw_type & 0x8 != 0
+    raw_type & rd_masks().legend_type != 0
 }
 
-fn parse_card_type(raw_type: i64, raw_race: i64) -> Option<Vec<&'static str>> {
+fn parse_card_type(raw_type: i64, raw_race: i64) -> Option<Vec<String>> {
     if raw_type < 0 {
         return None;
     }
@@ -391,11 +390,10 @@ fn parse_card_type(raw_type: i64, raw_race: i64) -> Option<Vec<&'static str>> {
         return None;
     }
 
-    let primary = primary_type(raw_type)?;
+    let (primary, primary_label) = primary_type(raw_type)?;
     let mut card_type = match primary {
-        PrimaryType::Monster => vec!["怪兽", normalize_race(raw_race)?],
-        PrimaryType::Spell => vec!["魔法"],
-        PrimaryType::Trap => vec!["陷阱"],
+        PrimaryType::Monster => vec![primary_label, normalize_race(raw_race)?],
+        PrimaryType::Spell | PrimaryType::Trap => vec![primary_label],
     };
     card_type.extend(matched_subtype_flags(raw_type, primary));
 
@@ -403,24 +401,22 @@ fn parse_card_type(raw_type: i64, raw_race: i64) -> Option<Vec<&'static str>> {
 }
 
 fn known_type_mask() -> i64 {
-    PRIMARY_TYPE_FLAGS
+    rd_masks()
+        .primary_types
         .iter()
-        .chain(SUBTYPE_FLAGS.iter())
-        .fold(LEGEND_TYPE_FLAG, |mask, flag| mask | flag.bit)
+        .chain(rd_masks().subtypes.iter())
+        .fold(rd_masks().legend_type, |mask, flag| mask | flag.bit)
 }
 
-fn primary_type(raw_type: i64) -> Option<PrimaryType> {
+fn primary_type(raw_type: i64) -> Option<(PrimaryType, String)> {
     let mut primary = None;
 
-    for (bit, card_type) in [
-        (0x1, PrimaryType::Monster),
-        (0x2, PrimaryType::Spell),
-        (0x4, PrimaryType::Trap),
-    ] {
-        if raw_type & bit == 0 {
+    for flag in &rd_masks().primary_types {
+        if raw_type & flag.bit == 0 {
             continue;
         }
-        if primary.replace(card_type).is_some() {
+        let card_type = primary_kind(&flag.label)?;
+        if primary.replace((card_type, flag.label.clone())).is_some() {
             return None;
         }
     }
@@ -428,19 +424,30 @@ fn primary_type(raw_type: i64) -> Option<PrimaryType> {
     primary
 }
 
-fn matched_subtype_flags(raw_type: i64, primary: PrimaryType) -> Vec<&'static str> {
-    SUBTYPE_FLAGS
+fn primary_kind(label: &str) -> Option<PrimaryType> {
+    match label {
+        "怪兽" => Some(PrimaryType::Monster),
+        "魔法" => Some(PrimaryType::Spell),
+        "陷阱" => Some(PrimaryType::Trap),
+        _ => None,
+    }
+}
+
+fn matched_subtype_flags(raw_type: i64, primary: PrimaryType) -> Vec<String> {
+    rd_masks()
+        .subtypes
         .iter()
         .filter_map(|flag| {
+            let masks = rd_masks();
             if primary == PrimaryType::Monster
-                && raw_type & RITUAL_TYPE_FLAG != 0
-                && flag.bit == FUSION_TYPE_FLAG
+                && raw_type & masks.ritual_type != 0
+                && flag.bit == masks.fusion_type
             {
                 return None;
             }
 
             if raw_type & flag.bit != 0 {
-                Some(flag.label)
+                Some(flag.label.clone())
             } else {
                 None
             }
@@ -448,48 +455,8 @@ fn matched_subtype_flags(raw_type: i64, primary: PrimaryType) -> Vec<&'static st
         .collect()
 }
 
-fn normalize_race(raw_race: i64) -> Option<&'static str> {
-    match raw_race {
-        0x1 => Some("战士族"),
-        0x2 => Some("魔法师族"),
-        0x4 => Some("天使族"),
-        0x8 => Some("恶魔族"),
-        0x10 => Some("不死族"),
-        0x20 => Some("机械族"),
-        0x40 => Some("水族"),
-        0x80 => Some("炎族"),
-        0x100 => Some("岩石族"),
-        0x200 => Some("鸟兽族"),
-        0x400 => Some("植物族"),
-        0x800 => Some("昆虫族"),
-        0x1000 => Some("雷族"),
-        0x2000 => Some("龙族"),
-        0x4000 => Some("兽族"),
-        0x8000 => Some("兽战士族"),
-        0x10000 => Some("恐龙族"),
-        0x20000 => Some("鱼族"),
-        0x40000 => Some("海龙族"),
-        0x80000 => Some("爬虫类族"),
-        0x100000 => Some("念动力族"),
-        0x200000 => Some("幻神兽族"),
-        0x400000 => Some("创造神族"),
-        0x800000 => Some("幻龙族"),
-        0x1000000 => Some("电子界族"),
-        0x2000000 => Some("幻想魔族"),
-        0x4000000 => Some("魔导骑士族"),
-        0x8000000 => Some("多头龙族"),
-        0x10000000 => Some("欧米茄念动力族"),
-        0x20000000 => Some("天界战士族"),
-        0x40000000 => Some("银河族"),
-        0x80000000 | -0x80000000 => Some("电子人族"),
-        _ => None,
-    }
-}
-
-#[derive(Debug)]
-struct TypeFlag {
-    bit: i64,
-    label: &'static str,
+fn normalize_race(raw_race: i64) -> Option<String> {
+    mapped_label(&rd_masks().races, raw_race)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,62 +465,6 @@ enum PrimaryType {
     Spell,
     Trap,
 }
-
-const LEGEND_TYPE_FLAG: i64 = 0x8;
-const FUSION_TYPE_FLAG: i64 = 0x40;
-const RITUAL_TYPE_FLAG: i64 = 0x80;
-
-const MAXIMUM_NAME_MARKERS: &[(i64, &[&str])] = &[
-    (0, &["[L]", "［L］", "［Ｌ］"]),
-    (1, &["[M]", "［M］", "［Ｍ］"]),
-    (2, &["[R]", "［R］", "［Ｒ］"]),
-];
-
-const PRIMARY_TYPE_FLAGS: &[TypeFlag] = &[
-    TypeFlag {
-        bit: 0x1,
-        label: "怪兽",
-    },
-    TypeFlag {
-        bit: 0x2,
-        label: "魔法",
-    },
-    TypeFlag {
-        bit: 0x4,
-        label: "陷阱",
-    },
-];
-
-const SUBTYPE_FLAGS: &[TypeFlag] = &[
-    TypeFlag {
-        bit: 0x80000,
-        label: "场地",
-    },
-    TypeFlag {
-        bit: 0x40000,
-        label: "装备",
-    },
-    TypeFlag {
-        bit: 0x8000,
-        label: "极限",
-    },
-    TypeFlag {
-        bit: RITUAL_TYPE_FLAG,
-        label: "仪式",
-    },
-    TypeFlag {
-        bit: FUSION_TYPE_FLAG,
-        label: "融合",
-    },
-    TypeFlag {
-        bit: 0x20,
-        label: "效果",
-    },
-    TypeFlag {
-        bit: 0x10,
-        label: "通常",
-    },
-];
 
 #[derive(Debug)]
 struct LfList {
@@ -639,6 +550,14 @@ impl LfSection {
 mod tests {
     use super::*;
 
+    fn labels(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| String::from(*value)).collect()
+    }
+
+    fn some_labels(values: &[&str]) -> Option<Vec<String>> {
+        Some(labels(values))
+    }
+
     #[test]
     fn serializes_general_properties() {
         let card = RdCard {
@@ -648,7 +567,7 @@ mod tests {
             image: 120100001,
             description: String::from("【条件】\n无"),
             legend: false,
-            r#type: vec!["魔法"],
+            r#type: labels(&["魔法"]),
             lf: 3,
             alias: 0,
             atk: None,
@@ -674,7 +593,7 @@ mod tests {
             image: 120105001,
             description: String::from("【条件】\n无"),
             legend: false,
-            r#type: vec!["怪兽", "魔法师族", "效果"],
+            r#type: labels(&["怪兽", "魔法师族", "效果"]),
             lf: 3,
             alias: 0,
             atk: Some(2100),
@@ -700,7 +619,7 @@ mod tests {
             image: 120150002,
             description: String::from("可以和其他卡集齐作极大召唤。"),
             legend: false,
-            r#type: vec!["怪兽", "机械族", "极限", "效果"],
+            r#type: labels(&["怪兽", "机械族", "极限", "效果"]),
             lf: 3,
             alias: 0,
             atk: Some(1900),
@@ -766,30 +685,30 @@ mod tests {
 
     #[test]
     fn parses_type_bits_after_primary_from_high_to_low() {
-        assert_eq!(parse_card_type(0x2, 0), Some(vec!["魔法"]));
-        assert_eq!(parse_card_type(0x80002, 0), Some(vec!["魔法", "场地"]));
-        assert_eq!(parse_card_type(0x40002, 0), Some(vec!["魔法", "装备"]));
-        assert_eq!(parse_card_type(0x82, 0), Some(vec!["魔法", "仪式"]));
-        assert_eq!(parse_card_type(0xc, 0), Some(vec!["陷阱"]));
+        assert_eq!(parse_card_type(0x2, 0), some_labels(&["魔法"]));
+        assert_eq!(parse_card_type(0x80002, 0), some_labels(&["魔法", "场地"]));
+        assert_eq!(parse_card_type(0x40002, 0), some_labels(&["魔法", "装备"]));
+        assert_eq!(parse_card_type(0x82, 0), some_labels(&["魔法", "仪式"]));
+        assert_eq!(parse_card_type(0xc, 0), some_labels(&["陷阱"]));
         assert_eq!(
             parse_card_type(0x29, 0x2),
-            Some(vec!["怪兽", "魔法师族", "效果"])
+            some_labels(&["怪兽", "魔法师族", "效果"])
         );
         assert_eq!(
             parse_card_type(0x61, 0x2000),
-            Some(vec!["怪兽", "龙族", "融合", "效果"])
+            some_labels(&["怪兽", "龙族", "融合", "效果"])
         );
         assert_eq!(
             parse_card_type(0xc1, 0x1),
-            Some(vec!["怪兽", "战士族", "仪式"])
+            some_labels(&["怪兽", "战士族", "仪式"])
         );
         assert_eq!(
             parse_card_type(0xe1, 0x20000000),
-            Some(vec!["怪兽", "天界战士族", "仪式", "效果"])
+            some_labels(&["怪兽", "天界战士族", "仪式", "效果"])
         );
         assert_eq!(
             parse_card_type(0x8021, 0x40000000),
-            Some(vec!["怪兽", "银河族", "极限", "效果"])
+            some_labels(&["怪兽", "银河族", "极限", "效果"])
         );
     }
 
@@ -803,39 +722,39 @@ mod tests {
 
     #[test]
     fn normalizes_monster_races() {
-        assert_eq!(normalize_race(0x1), Some("战士族"));
-        assert_eq!(normalize_race(0x2000), Some("龙族"));
-        assert_eq!(normalize_race(0x40000000), Some("银河族"));
-        assert_eq!(normalize_race(0x80000000), Some("电子人族"));
-        assert_eq!(normalize_race(-0x80000000), Some("电子人族"));
+        assert_eq!(normalize_race(0x1), Some(String::from("战士族")));
+        assert_eq!(normalize_race(0x2000), Some(String::from("龙族")));
+        assert_eq!(normalize_race(0x40000000), Some(String::from("银河族")));
+        assert_eq!(normalize_race(0x80000000), Some(String::from("电子人族")));
+        assert_eq!(normalize_race(-0x80000000), Some(String::from("电子人族")));
         assert_eq!(normalize_race(0), None);
     }
 
     #[test]
     fn keeps_stats_for_monsters_only() {
-        assert_eq!(monster_value(2100, &["怪兽", "效果"]), Some(2100));
-        assert_eq!(monster_value(0, &["魔法"]), None);
-        assert_eq!(monster_value(0, &["陷阱"]), None);
+        assert_eq!(monster_value(2100, &labels(&["怪兽", "效果"])), Some(2100));
+        assert_eq!(monster_value(0, &labels(&["魔法"])), None);
+        assert_eq!(monster_value(0, &labels(&["陷阱"])), None);
     }
 
     #[test]
     fn normalizes_maximum_positions() {
         assert_eq!(
-            normalize_maximum("超魔机神 大霸道王［L］", &["怪兽", "极限"], "desc"),
+            normalize_maximum("超魔机神 大霸道王［L］", &labels(&["怪兽", "极限"]), "desc"),
             Some(Some(0))
         );
         assert_eq!(
-            normalize_maximum("超魔机神 大霸道王[M]", &["怪兽", "极限"], "desc"),
+            normalize_maximum("超魔机神 大霸道王[M]", &labels(&["怪兽", "极限"]), "desc"),
             Some(Some(1))
         );
         assert_eq!(
-            normalize_maximum("超魔机神 大霸道王［R］", &["怪兽", "极限"], "desc"),
+            normalize_maximum("超魔机神 大霸道王［R］", &labels(&["怪兽", "极限"]), "desc"),
             Some(Some(2))
         );
         assert_eq!(
             normalize_maximum(
                 "超魔机神 大霸道王",
-                &["怪兽", "极限"],
+                &labels(&["怪兽", "极限"]),
                 "RD/MAX1-JP002\r\n极大攻击 3500\r\n正文"
             ),
             Some(Some(1))
@@ -843,17 +762,17 @@ mod tests {
         assert_eq!(
             normalize_maximum(
                 "外宇宙 安琪利瓦天愿",
-                &["怪兽", "极限"],
+                &labels(&["怪兽", "极限"]),
                 "RD/ORP3-JP061\r\n手卡的这张卡的卡名变成「破界王帝 外宇宙界愿［L］」。"
             ),
             Some(None)
         );
         assert_eq!(
-            normalize_maximum("普通魔法[L]", &["魔法"], "RD/X\r\n极大攻击 3500"),
+            normalize_maximum("普通魔法[L]", &labels(&["魔法"]), "RD/X\r\n极大攻击 3500"),
             Some(None)
         );
         assert_eq!(
-            normalize_maximum("异常［L］［R］", &["怪兽", "极限"], "desc"),
+            normalize_maximum("异常［L］［R］", &labels(&["怪兽", "极限"]), "desc"),
             None
         );
     }

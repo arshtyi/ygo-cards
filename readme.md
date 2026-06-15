@@ -40,6 +40,8 @@ cargo test
 
 Canonical data-field definitions are maintained in [arshtyi/ygo-definations](https://github.com/arshtyi/ygo-definations).
 
+Bitmask mappings for attributes, types, races, link markers, and RD maximum markers are maintained in `config/ot-masks.json` and `config/rd-masks.json`.
+
 ## Automation
 
 GitHub Actions publishes the generated JSON files to the `latest` release every Monday and Friday at 22:00 Beijing time(UTC+8).

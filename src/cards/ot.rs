@@ -8,7 +8,12 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::{LfSummary, WriteReport, images::ImageResolver, text::normalize_newlines};
+use super::{
+    LfSummary, WriteReport,
+    images::ImageResolver,
+    masks::{has_label, mapped_label, mapped_value, ot_masks},
+    text::normalize_newlines,
+};
 use crate::json::write_pretty_sorted;
 
 const CARDS_DB: &str = "assets/ot/cards.cdb";
@@ -28,7 +33,7 @@ struct OtCard {
     )]
     pendulum_description: Option<String>,
     alias: i64,
-    r#type: Vec<&'static str>,
+    r#type: Vec<String>,
     lf: Vec<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     atk: Option<i64>,
@@ -332,10 +337,10 @@ fn summarize_lf(cards: &[OtCard]) -> Vec<LfSummary> {
     ]
 }
 
-fn normalize_description(description: &str, card_type: &[&str]) -> Option<String> {
+fn normalize_description(description: &str, card_type: &[String]) -> Option<String> {
     let description = normalize_newlines(description);
 
-    if !card_type.contains(&"灵摆") {
+    if !has_label(card_type, "灵摆") {
         return Some(description);
     }
 
@@ -350,8 +355,11 @@ fn normalize_description(description: &str, card_type: &[&str]) -> Option<String
         })
 }
 
-fn normalize_pendulum_description(description: &str, card_type: &[&str]) -> Option<Option<String>> {
-    if !card_type.contains(&"灵摆") {
+fn normalize_pendulum_description(
+    description: &str,
+    card_type: &[String],
+) -> Option<Option<String>> {
+    if !has_label(card_type, "灵摆") {
         return Some(None);
     }
 
@@ -373,8 +381,8 @@ fn monster_description_marker_index(description: &str) -> Option<usize> {
         .min()
 }
 
-fn normalize_atk(raw_atk: i64, card_type: &[&str]) -> Option<Option<i64>> {
-    if !card_type.contains(&"怪兽") {
+fn normalize_atk(raw_atk: i64, card_type: &[String]) -> Option<Option<i64>> {
+    if !has_label(card_type, "怪兽") {
         return Some(None);
     }
 
@@ -382,8 +390,8 @@ fn normalize_atk(raw_atk: i64, card_type: &[&str]) -> Option<Option<i64>> {
     if atk >= -1 { Some(Some(atk)) } else { None }
 }
 
-fn normalize_def(raw_def: i64, card_type: &[&str]) -> Option<Option<i64>> {
-    if !card_type.contains(&"怪兽") || card_type.contains(&"连接") {
+fn normalize_def(raw_def: i64, card_type: &[String]) -> Option<Option<i64>> {
+    if !has_label(card_type, "怪兽") || has_label(card_type, "连接") {
         return Some(None);
     }
 
@@ -395,8 +403,8 @@ fn normalize_def(raw_def: i64, card_type: &[&str]) -> Option<Option<i64>> {
     }
 }
 
-fn normalize_level(raw_level: i64, card_type: &[&str]) -> Option<Option<i64>> {
-    if !card_type.contains(&"怪兽") || card_type.contains(&"超量") || card_type.contains(&"连接")
+fn normalize_level(raw_level: i64, card_type: &[String]) -> Option<Option<i64>> {
+    if !has_label(card_type, "怪兽") || has_label(card_type, "超量") || has_label(card_type, "连接")
     {
         return Some(None);
     }
@@ -409,8 +417,8 @@ fn normalize_level(raw_level: i64, card_type: &[&str]) -> Option<Option<i64>> {
     }
 }
 
-fn normalize_rank(raw_level: i64, card_type: &[&str]) -> Option<Option<i64>> {
-    if !card_type.contains(&"怪兽") || !card_type.contains(&"超量") {
+fn normalize_rank(raw_level: i64, card_type: &[String]) -> Option<Option<i64>> {
+    if !has_label(card_type, "怪兽") || !has_label(card_type, "超量") {
         return Some(None);
     }
 
@@ -422,8 +430,8 @@ fn normalize_rank(raw_level: i64, card_type: &[&str]) -> Option<Option<i64>> {
     }
 }
 
-fn normalize_pendulum_scale(raw_level: i64, card_type: &[&str]) -> Option<Option<i64>> {
-    if !card_type.contains(&"怪兽") || !card_type.contains(&"灵摆") {
+fn normalize_pendulum_scale(raw_level: i64, card_type: &[String]) -> Option<Option<i64>> {
+    if !has_label(card_type, "怪兽") || !has_label(card_type, "灵摆") {
         return Some(None);
     }
 
@@ -440,8 +448,8 @@ fn normalize_pendulum_scale(raw_level: i64, card_type: &[&str]) -> Option<Option
     Some(Some(rscale))
 }
 
-fn normalize_link_value(raw_level: i64, card_type: &[&str]) -> Option<Option<i64>> {
-    if !card_type.contains(&"怪兽") || !card_type.contains(&"连接") {
+fn normalize_link_value(raw_level: i64, card_type: &[String]) -> Option<Option<i64>> {
+    if !has_label(card_type, "怪兽") || !has_label(card_type, "连接") {
         return Some(None);
     }
 
@@ -453,8 +461,8 @@ fn normalize_link_value(raw_level: i64, card_type: &[&str]) -> Option<Option<i64
     }
 }
 
-fn normalize_link_marker(raw_def: i64, card_type: &[&str]) -> Option<Option<Vec<i64>>> {
-    if !card_type.contains(&"怪兽") || !card_type.contains(&"连接") {
+fn normalize_link_marker(raw_def: i64, card_type: &[String]) -> Option<Option<Vec<i64>>> {
+    if !has_label(card_type, "怪兽") || !has_label(card_type, "连接") {
         return Some(None);
     }
 
@@ -462,11 +470,12 @@ fn normalize_link_marker(raw_def: i64, card_type: &[&str]) -> Option<Option<Vec<
         return None;
     }
 
-    let markers = LINK_MARKER_FLAGS
+    let markers = ot_masks()
+        .link_markers
         .iter()
-        .filter_map(|(bit, marker)| {
-            if raw_def & bit != 0 {
-                Some(*marker)
+        .filter_map(|entry| {
+            if raw_def & entry.bit != 0 {
+                Some(entry.value)
             } else {
                 None
             }
@@ -489,9 +498,10 @@ fn low_level_byte(raw_level: i64) -> Option<i64> {
 }
 
 fn known_link_marker_mask() -> i64 {
-    LINK_MARKER_FLAGS
+    ot_masks()
+        .link_markers
         .iter()
-        .fold(0, |mask, (bit, _)| mask | bit)
+        .fold(0, |mask, entry| mask | entry.bit)
 }
 
 #[derive(Debug)]
@@ -607,20 +617,10 @@ enum LfRegion {
 }
 
 fn normalize_attribute(raw_attribute: i64) -> Option<i64> {
-    match raw_attribute {
-        0x00 => Some(0),
-        0x40 => Some(0),
-        0x10 => Some(1),
-        0x20 => Some(2),
-        0x08 => Some(3),
-        0x01 => Some(4),
-        0x04 => Some(5),
-        0x02 => Some(6),
-        _ => None,
-    }
+    mapped_value(&ot_masks().attributes, raw_attribute)
 }
 
-fn parse_card_type(raw_type: i64, raw_race: i64) -> Option<Vec<&'static str>> {
+fn parse_card_type(raw_type: i64, raw_race: i64) -> Option<Vec<String>> {
     if raw_type < 0 {
         return None;
     }
@@ -629,22 +629,24 @@ fn parse_card_type(raw_type: i64, raw_race: i64) -> Option<Vec<&'static str>> {
         return None;
     }
 
-    let primary = primary_type(raw_type)?;
+    let (primary, primary_label) = primary_type(raw_type)?;
     let subtype_flags = matched_subtype_flags(raw_type);
-    if primary == PrimaryType::Monster && subtype_flags == ["衍生物"] {
+    if primary == PrimaryType::Monster
+        && subtype_flags.len() == 1
+        && has_label(&subtype_flags, "衍生物")
+    {
         return None;
     }
 
     let mut card_type = match primary {
         PrimaryType::Monster => {
-            let mut card_type = vec!["怪兽"];
+            let mut card_type = vec![primary_label];
             if let Some(race) = normalize_race(raw_race) {
                 card_type.push(race);
             }
             card_type
         }
-        PrimaryType::Spell => vec!["魔法"],
-        PrimaryType::Trap => vec!["陷阱"],
+        PrimaryType::Spell | PrimaryType::Trap => vec![primary_label],
     };
     card_type.extend(subtype_flags);
 
@@ -652,16 +654,11 @@ fn parse_card_type(raw_type: i64, raw_race: i64) -> Option<Vec<&'static str>> {
 }
 
 fn known_type_mask() -> i64 {
-    PRIMARY_TYPE_FLAGS
+    ot_masks()
+        .primary_types
         .iter()
-        .chain(SUBTYPE_FLAGS.iter())
+        .chain(ot_masks().subtypes.iter())
         .fold(0, |mask, flag| mask | flag.bit)
-}
-
-#[derive(Debug)]
-struct TypeFlag {
-    bit: i64,
-    label: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -671,35 +668,54 @@ enum PrimaryType {
     Trap,
 }
 
-fn primary_type(raw_type: i64) -> Option<PrimaryType> {
+fn primary_type(raw_type: i64) -> Option<(PrimaryType, String)> {
     let mut primary = None;
 
-    for (bit, card_type) in [
-        (0x1, PrimaryType::Monster),
-        (0x2, PrimaryType::Spell),
-        (0x4, PrimaryType::Trap),
-    ] {
-        if raw_type & bit == 0 {
+    for flag in &ot_masks().primary_types {
+        if raw_type & flag.bit == 0 {
             continue;
         }
-        if primary.replace(card_type).is_some() {
+        let card_type = primary_kind(&flag.label)?;
+        if primary.replace((card_type, flag.label.clone())).is_some() {
             return None;
         }
     }
 
-    if primary.is_none() && raw_type & 0x4000 != 0 && matched_subtype_flags(raw_type).len() > 1 {
-        primary = Some(PrimaryType::Monster);
+    let masks = ot_masks();
+    if primary.is_none()
+        && raw_type & masks.inferred_monster_type_bit != 0
+        && matched_subtype_flags(raw_type).len() > 1
+    {
+        primary = Some((PrimaryType::Monster, primary_label(PrimaryType::Monster)?));
     }
 
     primary
 }
 
-fn matched_subtype_flags(raw_type: i64) -> Vec<&'static str> {
-    SUBTYPE_FLAGS
+fn primary_kind(label: &str) -> Option<PrimaryType> {
+    match label {
+        "怪兽" => Some(PrimaryType::Monster),
+        "魔法" => Some(PrimaryType::Spell),
+        "陷阱" => Some(PrimaryType::Trap),
+        _ => None,
+    }
+}
+
+fn primary_label(primary: PrimaryType) -> Option<String> {
+    ot_masks()
+        .primary_types
+        .iter()
+        .find(|flag| primary_kind(&flag.label) == Some(primary))
+        .map(|flag| flag.label.clone())
+}
+
+fn matched_subtype_flags(raw_type: i64) -> Vec<String> {
+    ot_masks()
+        .subtypes
         .iter()
         .filter_map(|flag| {
             if raw_type & flag.bit != 0 {
-                Some(flag.label)
+                Some(flag.label.clone())
             } else {
                 None
             }
@@ -707,158 +723,21 @@ fn matched_subtype_flags(raw_type: i64) -> Vec<&'static str> {
         .collect()
 }
 
-fn normalize_race(raw_race: i64) -> Option<&'static str> {
-    match raw_race {
-        0x1 => Some("战士族"),
-        0x2 => Some("魔法师族"),
-        0x4 => Some("天使族"),
-        0x8 => Some("恶魔族"),
-        0x10 => Some("不死族"),
-        0x20 => Some("机械族"),
-        0x40 => Some("水族"),
-        0x80 => Some("炎族"),
-        0x100 => Some("岩石族"),
-        0x200 => Some("鸟兽族"),
-        0x400 => Some("植物族"),
-        0x800 => Some("昆虫族"),
-        0x1000 => Some("雷族"),
-        0x2000 => Some("龙族"),
-        0x4000 => Some("兽族"),
-        0x8000 => Some("兽战士族"),
-        0x10000 => Some("恐龙族"),
-        0x20000 => Some("鱼族"),
-        0x40000 => Some("海龙族"),
-        0x80000 => Some("爬虫类族"),
-        0x100000 => Some("念动力族"),
-        0x200000 => Some("幻神兽族"),
-        0x400000 => Some("创造神族"),
-        0x800000 => Some("幻龙族"),
-        0x1000000 => Some("电子界族"),
-        0x2000000 => Some("幻想魔族"),
-        _ => None,
-    }
+fn normalize_race(raw_race: i64) -> Option<String> {
+    mapped_label(&ot_masks().races, raw_race)
 }
-
-const PRIMARY_TYPE_FLAGS: &[TypeFlag] = &[
-    TypeFlag {
-        bit: 0x1,
-        label: "怪兽",
-    },
-    TypeFlag {
-        bit: 0x2,
-        label: "魔法",
-    },
-    TypeFlag {
-        bit: 0x4,
-        label: "陷阱",
-    },
-];
-
-const SUBTYPE_FLAGS: &[TypeFlag] = &[
-    TypeFlag {
-        bit: 0x4000000,
-        label: "连接",
-    },
-    TypeFlag {
-        bit: 0x2000000,
-        label: "特殊召唤",
-    },
-    TypeFlag {
-        bit: 0x1000000,
-        label: "灵摆",
-    },
-    TypeFlag {
-        bit: 0x800000,
-        label: "超量",
-    },
-    TypeFlag {
-        bit: 0x400000,
-        label: "卡通",
-    },
-    TypeFlag {
-        bit: 0x200000,
-        label: "反转",
-    },
-    TypeFlag {
-        bit: 0x100000,
-        label: "反击",
-    },
-    TypeFlag {
-        bit: 0x80000,
-        label: "场地",
-    },
-    TypeFlag {
-        bit: 0x40000,
-        label: "装备",
-    },
-    TypeFlag {
-        bit: 0x20000,
-        label: "永续",
-    },
-    TypeFlag {
-        bit: 0x10000,
-        label: "速攻",
-    },
-    TypeFlag {
-        bit: 0x4000,
-        label: "衍生物",
-    },
-    TypeFlag {
-        bit: 0x2000,
-        label: "同调",
-    },
-    TypeFlag {
-        bit: 0x1000,
-        label: "调整",
-    },
-    TypeFlag {
-        bit: 0x800,
-        label: "二重",
-    },
-    TypeFlag {
-        bit: 0x400,
-        label: "同盟",
-    },
-    TypeFlag {
-        bit: 0x200,
-        label: "灵魂",
-    },
-    TypeFlag {
-        bit: 0x100,
-        label: "陷阱怪兽",
-    },
-    TypeFlag {
-        bit: 0x80,
-        label: "仪式",
-    },
-    TypeFlag {
-        bit: 0x40,
-        label: "融合",
-    },
-    TypeFlag {
-        bit: 0x20,
-        label: "效果",
-    },
-    TypeFlag {
-        bit: 0x10,
-        label: "通常",
-    },
-];
-
-const LINK_MARKER_FLAGS: &[(i64, i64)] = &[
-    (0x040, 0),
-    (0x008, 1),
-    (0x001, 2),
-    (0x002, 3),
-    (0x004, 4),
-    (0x020, 5),
-    (0x100, 6),
-    (0x080, 7),
-];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn labels(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| String::from(*value)).collect()
+    }
+
+    fn some_labels(values: &[&str]) -> Option<Vec<String>> {
+        Some(labels(values))
+    }
 
     #[test]
     fn serializes_general_properties() {
@@ -870,7 +749,7 @@ mod tests {
             description: String::from("A legendary dragon."),
             pendulum_description: None,
             alias: 0,
-            r#type: vec!["怪兽", "龙族", "通常"],
+            r#type: labels(&["怪兽", "龙族", "通常"]),
             lf: vec![3, 1],
             atk: Some(3000),
             def: Some(2500),
@@ -903,16 +782,16 @@ mod tests {
 
     #[test]
     fn parses_type_bits_after_primary_from_high_to_low() {
-        assert_eq!(parse_card_type(0x2, 0), Some(vec!["魔法"]));
-        assert_eq!(parse_card_type(0x10002, 0), Some(vec!["魔法", "速攻"]));
-        assert_eq!(parse_card_type(0x100004, 0), Some(vec!["陷阱", "反击"]));
+        assert_eq!(parse_card_type(0x2, 0), some_labels(&["魔法"]));
+        assert_eq!(parse_card_type(0x10002, 0), some_labels(&["魔法", "速攻"]));
+        assert_eq!(parse_card_type(0x100004, 0), some_labels(&["陷阱", "反击"]));
         assert_eq!(
             parse_card_type(0x2101, 0x20),
-            Some(vec!["怪兽", "机械族", "同调", "陷阱怪兽"])
+            some_labels(&["怪兽", "机械族", "同调", "陷阱怪兽"])
         );
         assert_eq!(
             parse_card_type(0x4011, 0x8),
-            Some(vec!["怪兽", "恶魔族", "衍生物", "通常"])
+            some_labels(&["怪兽", "恶魔族", "衍生物", "通常"])
         );
     }
 
@@ -924,15 +803,15 @@ mod tests {
         assert_eq!(parse_card_type(0x4000, 0x8), None);
         assert_eq!(
             parse_card_type(0x4011, 0),
-            Some(vec!["怪兽", "衍生物", "通常"])
+            some_labels(&["怪兽", "衍生物", "通常"])
         );
     }
 
     #[test]
     fn normalizes_monster_races() {
-        assert_eq!(normalize_race(0x1), Some("战士族"));
-        assert_eq!(normalize_race(0x2000), Some("龙族"));
-        assert_eq!(normalize_race(0x2000000), Some("幻想魔族"));
+        assert_eq!(normalize_race(0x1), Some(String::from("战士族")));
+        assert_eq!(normalize_race(0x2000), Some(String::from("龙族")));
+        assert_eq!(normalize_race(0x2000000), Some(String::from("幻想魔族")));
         assert_eq!(normalize_race(0), None);
     }
 
@@ -977,24 +856,27 @@ mod tests {
     #[test]
     fn normalizes_descriptions() {
         assert_eq!(
-            normalize_description("line 1\r\n\r\nline 2", &["魔法"]).unwrap(),
+            normalize_description("line 1\r\n\r\nline 2", &labels(&["魔法"])).unwrap(),
             "line 1\nline 2"
         );
         assert_eq!(
             normalize_description(
                 "【灵摆效果】P\r\n【怪兽效果】\r\nM\r\n\r\nE",
-                &["怪兽", "灵摆"]
+                &labels(&["怪兽", "灵摆"])
             )
             .unwrap(),
             "M\nE"
         );
         assert_eq!(
-            normalize_description("【灵摆效果】P\r\n【怪兽描述】\r\nM\r\nE", &["怪兽", "灵摆"])
-                .unwrap(),
+            normalize_description(
+                "【灵摆效果】P\r\n【怪兽描述】\r\nM\r\nE",
+                &labels(&["怪兽", "灵摆"])
+            )
+            .unwrap(),
             "M\nE"
         );
         assert_eq!(
-            normalize_description("missing marker", &["怪兽", "灵摆"]),
+            normalize_description("missing marker", &labels(&["怪兽", "灵摆"])),
             None
         );
     }
@@ -1002,99 +884,108 @@ mod tests {
     #[test]
     fn normalizes_pendulum_descriptions() {
         assert_eq!(
-            normalize_pendulum_description("plain", &["魔法"]).unwrap(),
+            normalize_pendulum_description("plain", &labels(&["魔法"])).unwrap(),
             None
         );
         assert_eq!(
             normalize_pendulum_description(
                 "首行\r\nP1\r\n\r\nP2\r\n【怪兽效果】\r\nM",
-                &["怪兽", "灵摆"]
+                &labels(&["怪兽", "灵摆"])
             )
             .unwrap(),
             Some(String::from("P1\nP2"))
         );
         assert_eq!(
-            normalize_pendulum_description("首行\r\nP1\r\n【怪兽描述】\r\nM", &["怪兽", "灵摆"])
-                .unwrap(),
+            normalize_pendulum_description(
+                "首行\r\nP1\r\n【怪兽描述】\r\nM",
+                &labels(&["怪兽", "灵摆"])
+            )
+            .unwrap(),
             Some(String::from("P1"))
         );
         assert_eq!(
-            normalize_pendulum_description("首行\r\nmissing marker", &["怪兽", "灵摆"]),
+            normalize_pendulum_description("首行\r\nmissing marker", &labels(&["怪兽", "灵摆"])),
             None
         );
     }
 
     #[test]
     fn normalizes_monster_atk() {
-        assert_eq!(normalize_atk(3000, &["怪兽"]), Some(Some(3000)));
-        assert_eq!(normalize_atk(-2, &["怪兽"]), Some(Some(-1)));
-        assert_eq!(normalize_atk(-1, &["怪兽"]), Some(Some(-1)));
-        assert_eq!(normalize_atk(-3, &["怪兽"]), None);
-        assert_eq!(normalize_atk(0, &["魔法"]), Some(None));
+        assert_eq!(normalize_atk(3000, &labels(&["怪兽"])), Some(Some(3000)));
+        assert_eq!(normalize_atk(-2, &labels(&["怪兽"])), Some(Some(-1)));
+        assert_eq!(normalize_atk(-1, &labels(&["怪兽"])), Some(Some(-1)));
+        assert_eq!(normalize_atk(-3, &labels(&["怪兽"])), None);
+        assert_eq!(normalize_atk(0, &labels(&["魔法"])), Some(None));
     }
 
     #[test]
     fn normalizes_monster_def_and_link_value() {
-        assert_eq!(normalize_def(2500, &["怪兽"]), Some(Some(2500)));
-        assert_eq!(normalize_def(-2, &["怪兽"]), Some(Some(-1)));
-        assert_eq!(normalize_def(-1, &["怪兽"]), Some(Some(-1)));
-        assert_eq!(normalize_def(-3, &["怪兽"]), None);
-        assert_eq!(normalize_def(0, &["魔法"]), Some(None));
-        assert_eq!(normalize_def(-2, &["怪兽", "连接"]), Some(None));
+        assert_eq!(normalize_def(2500, &labels(&["怪兽"])), Some(Some(2500)));
+        assert_eq!(normalize_def(-2, &labels(&["怪兽"])), Some(Some(-1)));
+        assert_eq!(normalize_def(-1, &labels(&["怪兽"])), Some(Some(-1)));
+        assert_eq!(normalize_def(-3, &labels(&["怪兽"])), None);
+        assert_eq!(normalize_def(0, &labels(&["魔法"])), Some(None));
+        assert_eq!(normalize_def(-2, &labels(&["怪兽", "连接"])), Some(None));
 
         assert_eq!(
-            normalize_link_value(0x04000004, &["怪兽", "连接"]),
+            normalize_link_value(0x04000004, &labels(&["怪兽", "连接"])),
             Some(Some(4))
         );
-        assert_eq!(normalize_link_value(0, &["怪兽", "连接"]), None);
-        assert_eq!(normalize_link_value(9, &["怪兽", "连接"]), None);
-        assert_eq!(normalize_link_value(4, &["怪兽"]), Some(None));
-        assert_eq!(normalize_link_value(4, &["魔法"]), Some(None));
+        assert_eq!(normalize_link_value(0, &labels(&["怪兽", "连接"])), None);
+        assert_eq!(normalize_link_value(9, &labels(&["怪兽", "连接"])), None);
+        assert_eq!(normalize_link_value(4, &labels(&["怪兽"])), Some(None));
+        assert_eq!(normalize_link_value(4, &labels(&["魔法"])), Some(None));
     }
 
     #[test]
     fn normalizes_monster_level_rank_and_pendulum_scale() {
-        assert_eq!(normalize_level(8, &["怪兽"]), Some(Some(8)));
-        assert_eq!(normalize_level(0x0d000008, &["怪兽"]), Some(Some(8)));
-        assert_eq!(normalize_level(14, &["怪兽"]), None);
-        assert_eq!(normalize_level(-1, &["怪兽"]), None);
-        assert_eq!(normalize_level(4, &["怪兽", "超量"]), Some(None));
-        assert_eq!(normalize_level(4, &["怪兽", "连接"]), Some(None));
-        assert_eq!(normalize_level(4, &["魔法"]), Some(None));
+        assert_eq!(normalize_level(8, &labels(&["怪兽"])), Some(Some(8)));
+        assert_eq!(
+            normalize_level(0x0d000008, &labels(&["怪兽"])),
+            Some(Some(8))
+        );
+        assert_eq!(normalize_level(14, &labels(&["怪兽"])), None);
+        assert_eq!(normalize_level(-1, &labels(&["怪兽"])), None);
+        assert_eq!(normalize_level(4, &labels(&["怪兽", "超量"])), Some(None));
+        assert_eq!(normalize_level(4, &labels(&["怪兽", "连接"])), Some(None));
+        assert_eq!(normalize_level(4, &labels(&["魔法"])), Some(None));
 
-        assert_eq!(normalize_rank(4, &["怪兽", "超量"]), Some(Some(4)));
-        assert_eq!(normalize_rank(14, &["怪兽", "超量"]), None);
-        assert_eq!(normalize_rank(4, &["怪兽"]), Some(None));
+        assert_eq!(normalize_rank(4, &labels(&["怪兽", "超量"])), Some(Some(4)));
+        assert_eq!(normalize_rank(14, &labels(&["怪兽", "超量"])), None);
+        assert_eq!(normalize_rank(4, &labels(&["怪兽"])), Some(None));
 
         let pendulum_level = (8 << 24) | (8 << 16) | 4;
         assert_eq!(
-            normalize_pendulum_scale(pendulum_level, &["怪兽", "灵摆"]),
+            normalize_pendulum_scale(pendulum_level, &labels(&["怪兽", "灵摆"])),
             Some(Some(8))
         );
         assert_eq!(
-            normalize_pendulum_scale((7 << 24) | (8 << 16) | 4, &["怪兽", "灵摆"]),
+            normalize_pendulum_scale((7 << 24) | (8 << 16) | 4, &labels(&["怪兽", "灵摆"])),
             None
         );
         assert_eq!(
-            normalize_pendulum_scale((14 << 24) | (14 << 16) | 4, &["怪兽", "灵摆"]),
+            normalize_pendulum_scale((14 << 24) | (14 << 16) | 4, &labels(&["怪兽", "灵摆"])),
             None
         );
-        assert_eq!(normalize_pendulum_scale(4, &["怪兽"]), Some(None));
+        assert_eq!(normalize_pendulum_scale(4, &labels(&["怪兽"])), Some(None));
     }
 
     #[test]
     fn normalizes_link_markers() {
         assert_eq!(
-            normalize_link_marker(0xaa, &["怪兽", "连接"]),
+            normalize_link_marker(0xaa, &labels(&["怪兽", "连接"])),
             Some(Some(vec![1, 3, 5, 7]))
         );
         assert_eq!(
-            normalize_link_marker(0x141, &["怪兽", "连接"]),
+            normalize_link_marker(0x141, &labels(&["怪兽", "连接"])),
             Some(Some(vec![0, 2, 6]))
         );
-        assert_eq!(normalize_link_marker(0, &["怪兽", "连接"]), None);
-        assert_eq!(normalize_link_marker(0x200, &["怪兽", "连接"]), None);
-        assert_eq!(normalize_link_marker(0xaa, &["怪兽"]), Some(None));
-        assert_eq!(normalize_link_marker(0xaa, &["魔法"]), Some(None));
+        assert_eq!(normalize_link_marker(0, &labels(&["怪兽", "连接"])), None);
+        assert_eq!(
+            normalize_link_marker(0x200, &labels(&["怪兽", "连接"])),
+            None
+        );
+        assert_eq!(normalize_link_marker(0xaa, &labels(&["怪兽"])), Some(None));
+        assert_eq!(normalize_link_marker(0xaa, &labels(&["魔法"])), Some(None));
     }
 }

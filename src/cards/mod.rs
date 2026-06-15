@@ -1,4 +1,5 @@
 mod images;
+mod masks;
 mod text;
 
 pub mod ot;
