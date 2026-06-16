@@ -1,12 +1,20 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
+use reqwest::StatusCode;
+use serde::Deserialize;
 use ygo_cards::cards::{ImageFailure, ImageSummary, WriteReport};
 
 const SUMMARY_REPORT: &str = "output/report.md";
+const LATEST_OT_JSON_URL: &str =
+    "https://github.com/arshtyi/ygo-cards/releases/download/latest/ot.json";
+const LATEST_RD_JSON_URL: &str =
+    "https://github.com/arshtyi/ygo-cards/releases/download/latest/rd.json";
 
 fn main() -> Result<()> {
     let options = Options::parse()?;
@@ -35,9 +43,11 @@ fn main() -> Result<()> {
     print_write_report(&rd_report);
 
     let reports = [&ot_report, &rd_report];
-    let summary_path = write_summary_report(&reports, Path::new(SUMMARY_REPORT))?;
+    let latest_comparisons = compare_latest_release(&reports)?;
+    let summary_path =
+        write_summary_report(&reports, &latest_comparisons, Path::new(SUMMARY_REPORT))?;
     println!("summary report -> {}", summary_path.display());
-    print_summary_report(&reports);
+    print_summary_report(&reports, &latest_comparisons);
 
     Ok(())
 }
@@ -98,18 +108,22 @@ fn print_image_failures(failures: &[ImageFailure]) {
     }
 }
 
-fn write_summary_report(reports: &[&WriteReport], path: &Path) -> Result<PathBuf> {
+fn write_summary_report(
+    reports: &[&WriteReport],
+    latest_comparisons: &[LatestComparisonReport],
+    path: &Path,
+) -> Result<PathBuf> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create report directory {}", parent.display()))?;
     }
 
-    let text = build_summary_report(reports);
+    let text = build_summary_report(reports, latest_comparisons);
     fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(path.to_path_buf())
 }
 
-fn print_summary_report(reports: &[&WriteReport]) {
+fn print_summary_report(reports: &[&WriteReport], latest_comparisons: &[LatestComparisonReport]) {
     let total_cards = reports
         .iter()
         .map(|report| report.cards_written)
@@ -134,9 +148,38 @@ fn print_summary_report(reports: &[&WriteReport]) {
             image_summary.network_errors
         );
     }
+
+    for comparison in latest_comparisons {
+        match &comparison.status {
+            LatestComparisonStatus::Compared { previous_cards } => {
+                println!(
+                    "  {} new cards since latest: {} (previous={} current={})",
+                    comparison.label,
+                    comparison.added_cards.len(),
+                    previous_cards,
+                    comparison.current_cards
+                );
+            }
+            LatestComparisonStatus::NotFound => {
+                println!(
+                    "  {} new cards since latest: skipped (latest asset not found)",
+                    comparison.label
+                );
+            }
+            LatestComparisonStatus::Unavailable(reason) => {
+                println!(
+                    "  {} new cards since latest: skipped ({})",
+                    comparison.label, reason
+                );
+            }
+        }
+    }
 }
 
-fn build_summary_report(reports: &[&WriteReport]) -> String {
+fn build_summary_report(
+    reports: &[&WriteReport],
+    latest_comparisons: &[LatestComparisonReport],
+) -> String {
     let mut report = String::new();
     let total_cards = reports
         .iter()
@@ -230,6 +273,8 @@ fn build_summary_report(reports: &[&WriteReport]) -> String {
         ));
     }
 
+    append_latest_comparison_report(&mut report, latest_comparisons);
+
     report
 }
 
@@ -257,6 +302,177 @@ fn escape_markdown_cell(text: &str) -> String {
     text.replace('\\', "\\\\")
         .replace('|', "\\|")
         .replace('\n', "<br>")
+}
+
+fn compare_latest_release(reports: &[&WriteReport]) -> Result<Vec<LatestComparisonReport>> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!(
+            env!("CARGO_PKG_NAME"),
+            "/",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("failed to build latest release HTTP client")?;
+
+    reports
+        .iter()
+        .map(|report| compare_latest_release_file(&client, report))
+        .collect()
+}
+
+fn compare_latest_release_file(
+    client: &reqwest::blocking::Client,
+    report: &WriteReport,
+) -> Result<LatestComparisonReport> {
+    let latest_url = latest_json_url(report.label);
+    let current_cards = read_card_summaries(&report.path)
+        .with_context(|| format!("failed to read current {} cards", report.label))?;
+
+    let (status, added_cards) = match fetch_latest_card_summaries(client, latest_url) {
+        LatestCardsFetch::Cards(previous_cards) => {
+            let added_cards = find_added_cards(&current_cards, &previous_cards);
+            (
+                LatestComparisonStatus::Compared {
+                    previous_cards: previous_cards.len(),
+                },
+                added_cards,
+            )
+        }
+        LatestCardsFetch::NotFound => (LatestComparisonStatus::NotFound, Vec::new()),
+        LatestCardsFetch::Unavailable(reason) => {
+            (LatestComparisonStatus::Unavailable(reason), Vec::new())
+        }
+    };
+
+    Ok(LatestComparisonReport {
+        label: report.label,
+        latest_url,
+        current_cards: current_cards.len(),
+        status,
+        added_cards,
+    })
+}
+
+fn latest_json_url(label: &str) -> &'static str {
+    match label {
+        "OT" => LATEST_OT_JSON_URL,
+        "RD" => LATEST_RD_JSON_URL,
+        _ => unreachable!("unsupported environment label {label}"),
+    }
+}
+
+fn fetch_latest_card_summaries(client: &reqwest::blocking::Client, url: &str) -> LatestCardsFetch {
+    let response = match client.get(url).send() {
+        Ok(response) => response,
+        Err(error) => return LatestCardsFetch::Unavailable(format!("download failed: {error}")),
+    };
+
+    match response.status() {
+        StatusCode::OK => {}
+        StatusCode::NOT_FOUND => return LatestCardsFetch::NotFound,
+        status => return LatestCardsFetch::Unavailable(format!("HTTP {status}")),
+    }
+
+    let text = match response.text() {
+        Ok(text) => text,
+        Err(error) => return LatestCardsFetch::Unavailable(format!("read failed: {error}")),
+    };
+
+    match parse_card_summaries(&text) {
+        Ok(cards) => LatestCardsFetch::Cards(cards),
+        Err(error) => LatestCardsFetch::Unavailable(format!("invalid JSON: {error}")),
+    }
+}
+
+fn read_card_summaries(path: &Path) -> Result<Vec<CardSummary>> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("failed to read cards JSON {}", path.display()))?;
+    parse_card_summaries(&text)
+}
+
+fn parse_card_summaries(text: &str) -> Result<Vec<CardSummary>> {
+    serde_json::from_str(text).context("failed to parse card summaries")
+}
+
+fn find_added_cards(
+    current_cards: &[CardSummary],
+    previous_cards: &[CardSummary],
+) -> Vec<CardSummary> {
+    let previous_ids = previous_cards
+        .iter()
+        .map(|card| card.id)
+        .collect::<BTreeSet<_>>();
+
+    current_cards
+        .iter()
+        .filter(|card| !previous_ids.contains(&card.id))
+        .cloned()
+        .collect()
+}
+
+fn append_latest_comparison_report(
+    report: &mut String,
+    latest_comparisons: &[LatestComparisonReport],
+) {
+    report.push_str("## New Cards Since Latest Release\n\n");
+
+    for comparison in latest_comparisons {
+        report.push_str(&format!("### {}\n\n", comparison.label));
+        report.push_str(&format!(
+            "Compared against [{}]({}).\n\n",
+            comparison.latest_url, comparison.latest_url
+        ));
+
+        match &comparison.status {
+            LatestComparisonStatus::Compared { previous_cards } => {
+                report.push_str("| Metric | Value |\n");
+                report.push_str("| --- | ---: |\n");
+                report.push_str(&format!("| Previous cards | {} |\n", previous_cards));
+                report.push_str(&format!(
+                    "| Current cards | {} |\n",
+                    comparison.current_cards
+                ));
+                report.push_str(&format!(
+                    "| New cards | {} |\n\n",
+                    comparison.added_cards.len()
+                ));
+
+                if comparison.added_cards.is_empty() {
+                    report.push_str("No new cards.\n\n");
+                } else {
+                    report.push_str("| ID | Name | Type |\n");
+                    report.push_str("| ---: | --- | --- |\n");
+                    for card in &comparison.added_cards {
+                        report.push_str(&format!(
+                            "| {} | {} | {} |\n",
+                            card.id,
+                            escape_markdown_cell(&card.name),
+                            escape_markdown_cell(&card_type_display(&card.card_type))
+                        ));
+                    }
+                    report.push('\n');
+                }
+            }
+            LatestComparisonStatus::NotFound => {
+                report.push_str("Previous latest file was not found; comparison skipped.\n\n");
+            }
+            LatestComparisonStatus::Unavailable(reason) => {
+                report.push_str(&format!(
+                    "Previous latest file could not be compared: {}.\n\n",
+                    escape_markdown_cell(reason)
+                ));
+            }
+        }
+    }
+}
+
+fn card_type_display(card_type: &[String]) -> String {
+    if card_type.is_empty() {
+        String::from("-")
+    } else {
+        card_type.join("/")
+    }
 }
 
 fn total_image_summary(reports: &[&WriteReport]) -> ImageSummary {
@@ -297,4 +513,112 @@ impl Options {
 
         Ok(options)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(id: i64, name: &str, card_type: &[&str]) -> CardSummary {
+        CardSummary {
+            id,
+            name: name.to_string(),
+            card_type: card_type.iter().map(|value| value.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn parses_card_summaries_from_generated_json_shape() {
+        let cards = parse_card_summaries(
+            r#"[
+                {"id":89631139,"name":"Blue-Eyes White Dragon","type":["怪兽","龙族","通常"],"atk":3000},
+                {"id":5318639,"name":"Mystical Space Typhoon","type":["魔法","速攻"]}
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cards,
+            vec![
+                card(
+                    89631139,
+                    "Blue-Eyes White Dragon",
+                    &["怪兽", "龙族", "通常"]
+                ),
+                card(5318639, "Mystical Space Typhoon", &["魔法", "速攻"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn finds_added_cards_by_id() {
+        let current_cards = vec![
+            card(1, "Existing", &["魔法"]),
+            card(2, "New", &["怪兽", "龙族", "通常"]),
+        ];
+        let previous_cards = vec![card(1, "Old Name", &["陷阱"])];
+
+        assert_eq!(
+            find_added_cards(&current_cards, &previous_cards),
+            vec![card(2, "New", &["怪兽", "龙族", "通常"])]
+        );
+    }
+
+    #[test]
+    fn formats_card_types_with_slashes() {
+        assert_eq!(
+            card_type_display(&["怪兽".to_string(), "龙族".to_string(), "通常".to_string()]),
+            "怪兽/龙族/通常"
+        );
+        assert_eq!(card_type_display(&[]), "-");
+    }
+
+    #[test]
+    fn appends_added_cards_to_latest_comparison_report() {
+        let mut report = String::new();
+        append_latest_comparison_report(
+            &mut report,
+            &[LatestComparisonReport {
+                label: "OT",
+                latest_url: LATEST_OT_JSON_URL,
+                current_cards: 2,
+                status: LatestComparisonStatus::Compared { previous_cards: 1 },
+                added_cards: vec![card(2, "New|Card", &["怪兽", "龙族", "通常"])],
+            }],
+        );
+
+        assert!(report.contains("## New Cards Since Latest Release"));
+        assert!(report.contains("| New cards | 1 |"));
+        assert!(report.contains("| 2 | New\\|Card | 怪兽/龙族/通常 |"));
+    }
+}
+
+#[derive(Debug)]
+struct LatestComparisonReport {
+    label: &'static str,
+    latest_url: &'static str,
+    current_cards: usize,
+    status: LatestComparisonStatus,
+    added_cards: Vec<CardSummary>,
+}
+
+#[derive(Debug)]
+enum LatestComparisonStatus {
+    Compared { previous_cards: usize },
+    NotFound,
+    Unavailable(String),
+}
+
+enum LatestCardsFetch {
+    Cards(Vec<CardSummary>),
+    NotFound,
+    Unavailable(String),
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct CardSummary {
+    id: i64,
+    name: String,
+    #[serde(default, rename = "type")]
+    card_type: Vec<String>,
 }

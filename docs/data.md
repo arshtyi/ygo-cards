@@ -16,6 +16,7 @@ The generated JSON files are arrays. Each array item is one card object. Object 
 3. Invalid cards are skipped with explicit diagnostics.
 4. JSON is written under `output/`.
 5. A Markdown build report is written to `output/report.md`.
+6. When the current `latest` release assets are available, the report lists cards newly added to `ot.json` and `rd.json` by ID, name, and slash-separated type.
 
 Use `--refresh-resources` when a build should force-download the upstream resources.
 

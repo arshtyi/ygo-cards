@@ -8,7 +8,7 @@ The tool downloads upstream YGOPro-compatible resources, normalizes card records
 
 - `output/ot.json`: normalized OT card data.
 - `output/rd.json`: normalized RD card data.
-- `output/report.md`: build summary, forbidden-list counts, skipped-card counts, and image-check results when enabled.
+- `output/report.md`: build summary, forbidden-list counts, skipped-card counts, image-check results when enabled, and new cards compared with the current `latest` release when available.
 
 ## Usage
 
