@@ -14,7 +14,6 @@ use reqwest::{
 
 use super::{ImageFailure, ImageSummary};
 
-const IMAGE_BASE_URL: &str = "https://images.ygoprodeck.com/images/cards_cropped";
 const MAX_IMAGE_CHECK_ATTEMPTS: u32 = 3;
 
 #[derive(Debug)]
@@ -29,8 +28,8 @@ pub(crate) struct ImageResolver {
 impl ImageResolver {
     pub(crate) fn new(check_images: bool) -> Result<Self> {
         let mode = if check_images {
-            ImageMode::Checking(
-                Client::builder()
+            ImageMode::Checking {
+                client: Client::builder()
                     .user_agent(concat!(
                         env!("CARGO_PKG_NAME"),
                         "/",
@@ -39,7 +38,8 @@ impl ImageResolver {
                     .timeout(Duration::from_secs(20))
                     .build()
                     .context("failed to build HTTP image client")?,
-            )
+                base_url: crate::urls::urls()?.image_base_url().to_string(),
+            }
         } else {
             ImageMode::UseCardId
         };
@@ -160,7 +160,11 @@ impl ImageResolver {
             ImageCheck::NetworkError(error) => {
                 self.summary.network_errors += 1;
                 self.summary.unique_urls_missing += 1;
-                eprintln!("image check failed for {}: {error}", image_url(id));
+                if let Some(url) = self.image_url(id) {
+                    eprintln!("image check failed for {url}: {error}");
+                } else {
+                    eprintln!("image check failed for {id}: {error}");
+                }
                 false
             }
         };
@@ -169,11 +173,11 @@ impl ImageResolver {
     }
 
     fn image_exists(&self, id: i64) -> ImageCheck {
-        let ImageMode::Checking(client) = &self.mode else {
+        let ImageMode::Checking { client, base_url } = &self.mode else {
             return ImageCheck::Found;
         };
 
-        let url = image_url(id);
+        let url = image_url(base_url, id);
         match send_image_request_with_retries(client, Method::HEAD, &url) {
             Ok(response) if response.status() == StatusCode::METHOD_NOT_ALLOWED => {
                 self.image_exists_with_get(&url)
@@ -190,7 +194,7 @@ impl ImageResolver {
     }
 
     fn image_exists_with_get(&self, url: &str) -> ImageCheck {
-        let ImageMode::Checking(client) = &self.mode else {
+        let ImageMode::Checking { client, .. } = &self.mode else {
             return ImageCheck::Found;
         };
 
@@ -198,6 +202,13 @@ impl ImageResolver {
             Ok(response) if is_image_response(&response) => ImageCheck::Found,
             Ok(_) => ImageCheck::Missing,
             Err(error) => ImageCheck::NetworkError(error.to_string()),
+        }
+    }
+
+    fn image_url(&self, id: i64) -> Option<String> {
+        match &self.mode {
+            ImageMode::UseCardId => None,
+            ImageMode::Checking { base_url, .. } => Some(image_url(base_url, id)),
         }
     }
 }
@@ -234,7 +245,7 @@ impl ProgressState {
 #[derive(Debug)]
 enum ImageMode {
     UseCardId,
-    Checking(Client),
+    Checking { client: Client, base_url: String },
 }
 
 #[derive(Debug)]
@@ -244,8 +255,8 @@ enum ImageCheck {
     NetworkError(String),
 }
 
-fn image_url(id: i64) -> String {
-    format!("{IMAGE_BASE_URL}/{id}.jpg")
+fn image_url(base_url: &str, id: i64) -> String {
+    format!("{}/{id}.jpg", base_url.trim_end_matches('/'))
 }
 
 fn resolve_image(mut id: i64, alias: i64, mut exists: impl FnMut(i64) -> bool) -> i64 {
@@ -319,8 +330,8 @@ mod tests {
     #[test]
     fn builds_image_urls() {
         assert_eq!(
-            image_url(89631139),
-            "https://images.ygoprodeck.com/images/cards_cropped/89631139.jpg"
+            image_url("https://example.test/cards/", 89631139),
+            "https://example.test/cards/89631139.jpg"
         );
     }
 

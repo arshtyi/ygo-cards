@@ -13,37 +13,56 @@ use reqwest::{
     header::RETRY_AFTER,
 };
 
+use crate::urls::{self, ResourceUrlKey, UrlConfig};
+
 const ASSETS_DIR: &str = "assets";
 const MAX_DOWNLOAD_ATTEMPTS: u32 = 4;
 const RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
 
-const RESOURCES: &[Resource] = &[
-    Resource {
+const RESOURCE_DEFINITIONS: &[ResourceDefinition] = &[
+    ResourceDefinition {
         name: "ot cards database",
-        url: "https://raw.githubusercontent.com/purerosefallen/ygopro/master/cards.cdb",
+        url: ResourceUrlKey::OtCardsDatabase,
         path: &["ot", "cards.cdb"],
     },
-    Resource {
+    ResourceDefinition {
         name: "ot forbidden list",
-        url: "https://raw.githubusercontent.com/purerosefallen/ygopro/master/lflist.conf",
+        url: ResourceUrlKey::OtForbiddenList,
         path: &["ot", "lflist.conf"],
     },
-    Resource {
+    ResourceDefinition {
         name: "rd cards database",
-        url: "https://code.moenext.com/mycard/ygopro-rush-duel/-/raw/master/RD%20Standard.cdb",
+        url: ResourceUrlKey::RdCardsDatabase,
         path: &["rd", "rd_standard.cdb"],
     },
-    Resource {
+    ResourceDefinition {
         name: "rd forbidden list",
-        url: "https://code.moenext.com/mycard/ygopro-rush-duel/-/raw/master/lflist.conf",
+        url: ResourceUrlKey::RdForbiddenList,
         path: &["rd", "lflist.conf"],
     },
 ];
 
 #[derive(Debug)]
-struct Resource {
+struct ResourceDefinition {
     name: &'static str,
-    url: &'static str,
+    url: ResourceUrlKey,
+    path: &'static [&'static str],
+}
+
+impl ResourceDefinition {
+    fn to_resource<'a>(&'a self, config: &'a UrlConfig) -> Resource<'a> {
+        Resource {
+            name: self.name,
+            url: config.resource_url(self.url),
+            path: self.path,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Resource<'a> {
+    name: &'static str,
+    url: &'a str,
     path: &'static [&'static str],
 }
 
@@ -55,6 +74,7 @@ pub struct DownloadedResource {
 }
 
 pub fn download_all() -> Result<Vec<DownloadedResource>> {
+    let url_config = urls::urls()?;
     let client = Client::builder()
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
@@ -65,13 +85,17 @@ pub fn download_all() -> Result<Vec<DownloadedResource>> {
         .build()
         .context("failed to build HTTP client")?;
 
-    RESOURCES
+    RESOURCE_DEFINITIONS
         .iter()
-        .map(|resource| download_resource(&client, resource))
+        .map(|definition| {
+            let resource = definition.to_resource(url_config);
+            download_resource(&client, &resource)
+        })
         .collect()
 }
 
 pub fn ensure_all() -> Result<()> {
+    let url_config = urls::urls()?;
     let client = Client::builder()
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
@@ -82,18 +106,19 @@ pub fn ensure_all() -> Result<()> {
         .build()
         .context("failed to build HTTP client")?;
 
-    for resource in RESOURCES {
-        if validate_asset(&asset_path(resource)).is_ok() {
+    for definition in RESOURCE_DEFINITIONS {
+        let resource = definition.to_resource(url_config);
+        if validate_asset(&asset_path(&resource)).is_ok() {
             continue;
         }
 
-        download_resource(&client, resource)?;
+        download_resource(&client, &resource)?;
     }
 
     Ok(())
 }
 
-fn download_resource(client: &Client, resource: &Resource) -> Result<DownloadedResource> {
+fn download_resource(client: &Client, resource: &Resource<'_>) -> Result<DownloadedResource> {
     let path = asset_path(resource);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -135,7 +160,7 @@ fn download_resource(client: &Client, resource: &Resource) -> Result<DownloadedR
 
 fn download_resource_once(
     client: &Client,
-    resource: &Resource,
+    resource: &Resource<'_>,
     path: &Path,
     temp_path: &Path,
 ) -> Result<u64> {
@@ -150,7 +175,7 @@ fn download_resource_once(
     Ok(bytes)
 }
 
-fn send_with_retries(client: &Client, resource: &Resource) -> Result<Response> {
+fn send_with_retries(client: &Client, resource: &Resource<'_>) -> Result<Response> {
     for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
         match client.get(resource.url).send() {
             Ok(response) if response.status().is_success() => return Ok(response),
@@ -213,9 +238,13 @@ fn backoff_delay(attempt: u32) -> Duration {
     Duration::from_secs(u64::from(attempt * attempt))
 }
 
-fn asset_path(resource: &Resource) -> PathBuf {
+fn asset_path(resource: &Resource<'_>) -> PathBuf {
+    asset_path_for_parts(resource.path)
+}
+
+fn asset_path_for_parts(path_parts: &[&str]) -> PathBuf {
     let mut path = PathBuf::from(ASSETS_DIR);
-    path.extend(resource.path);
+    path.extend(path_parts);
     path
 }
 
@@ -311,8 +340,8 @@ mod tests {
     fn asset_paths_are_unique_and_scoped() {
         let mut paths = HashSet::new();
 
-        for resource in RESOURCES {
-            let path = asset_path(resource);
+        for definition in RESOURCE_DEFINITIONS {
+            let path = asset_path_for_parts(definition.path);
             assert!(path.starts_with(ASSETS_DIR));
             assert!(paths.insert(path));
         }

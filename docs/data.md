@@ -20,6 +20,8 @@ The generated JSON files are arrays. Each array item is one card object. Object 
 
 Use `--refresh-resources` when a build should force-download the upstream resources.
 
+Remote resource URLs, latest-release comparison URLs, and the card-image base URL are maintained in `config/urls.json`.
+
 ## Mask Mappings
 
 Current bitmask mappings are versioned under `config/`:

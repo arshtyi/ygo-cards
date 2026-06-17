@@ -11,10 +11,6 @@ use serde::Deserialize;
 use ygo_cards::cards::{ImageFailure, ImageSummary, WriteReport};
 
 const SUMMARY_REPORT: &str = "output/report.md";
-const LATEST_OT_JSON_URL: &str =
-    "https://github.com/arshtyi/ygo-cards/releases/download/latest/ot.json";
-const LATEST_RD_JSON_URL: &str =
-    "https://github.com/arshtyi/ygo-cards/releases/download/latest/rd.json";
 
 fn main() -> Result<()> {
     let options = Options::parse()?;
@@ -305,6 +301,7 @@ fn escape_markdown_cell(text: &str) -> String {
 }
 
 fn compare_latest_release(reports: &[&WriteReport]) -> Result<Vec<LatestComparisonReport>> {
+    let url_config = ygo_cards::urls::urls()?;
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
@@ -317,19 +314,20 @@ fn compare_latest_release(reports: &[&WriteReport]) -> Result<Vec<LatestComparis
 
     reports
         .iter()
-        .map(|report| compare_latest_release_file(&client, report))
+        .map(|report| compare_latest_release_file(&client, url_config, report))
         .collect()
 }
 
 fn compare_latest_release_file(
     client: &reqwest::blocking::Client,
+    url_config: &ygo_cards::urls::UrlConfig,
     report: &WriteReport,
 ) -> Result<LatestComparisonReport> {
-    let latest_url = latest_json_url(report.label);
+    let latest_url = url_config.latest_json_url(report.label)?.to_string();
     let current_cards = read_card_summaries(&report.path)
         .with_context(|| format!("failed to read current {} cards", report.label))?;
 
-    let (status, added_cards) = match fetch_latest_card_summaries(client, latest_url) {
+    let (status, added_cards) = match fetch_latest_card_summaries(client, &latest_url) {
         LatestCardsFetch::Cards(previous_cards) => {
             let added_cards = find_added_cards(&current_cards, &previous_cards);
             (
@@ -352,14 +350,6 @@ fn compare_latest_release_file(
         status,
         added_cards,
     })
-}
-
-fn latest_json_url(label: &str) -> &'static str {
-    match label {
-        "OT" => LATEST_OT_JSON_URL,
-        "RD" => LATEST_RD_JSON_URL,
-        _ => unreachable!("unsupported environment label {label}"),
-    }
 }
 
 fn fetch_latest_card_summaries(client: &reqwest::blocking::Client, url: &str) -> LatestCardsFetch {
@@ -580,7 +570,11 @@ mod tests {
             &mut report,
             &[LatestComparisonReport {
                 label: "OT",
-                latest_url: LATEST_OT_JSON_URL,
+                latest_url: ygo_cards::urls::urls()
+                    .unwrap()
+                    .latest_json_url("OT")
+                    .unwrap()
+                    .to_string(),
                 current_cards: 2,
                 status: LatestComparisonStatus::Compared { previous_cards: 1 },
                 added_cards: vec![card(2, "New|Card", &["怪兽", "龙族", "通常"])],
@@ -596,7 +590,7 @@ mod tests {
 #[derive(Debug)]
 struct LatestComparisonReport {
     label: &'static str,
-    latest_url: &'static str,
+    latest_url: String,
     current_cards: usize,
     status: LatestComparisonStatus,
     added_cards: Vec<CardSummary>,
