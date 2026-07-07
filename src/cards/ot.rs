@@ -12,7 +12,7 @@ use super::{
     LfSummary, WriteReport,
     images::ImageResolver,
     masks::{has_label, mapped_label, mapped_value, ot_masks},
-    text::normalize_newlines,
+    text::{normalize_newlines, strip_effect_text_note_lines},
 };
 use crate::json::write_pretty_sorted;
 
@@ -341,17 +341,17 @@ fn normalize_description(description: &str, card_type: &[String]) -> Option<Stri
     let description = normalize_newlines(description);
 
     if !has_label(card_type, "灵摆") {
-        return Some(description);
+        return Some(strip_effect_text_note_lines(&description));
     }
 
     description
         .split_once("【怪兽效果】")
         .or_else(|| description.split_once("【怪兽描述】"))
         .map(|(_, monster_description)| {
-            monster_description
+            let monster_description = monster_description
                 .strip_prefix('\n')
-                .unwrap_or(monster_description)
-                .to_string()
+                .unwrap_or(monster_description);
+            strip_effect_text_note_lines(monster_description)
         })
 }
 
@@ -858,6 +858,14 @@ mod tests {
         assert_eq!(
             normalize_description("line 1\r\n\r\nline 2", &labels(&["魔法"])).unwrap(),
             "line 1\nline 2"
+        );
+        assert_eq!(
+            normalize_description(
+                "（注：暂时无法正常使用）\r\n这个卡名的卡在1回合只能发动1张。",
+                &labels(&["魔法"])
+            )
+            .unwrap(),
+            "这个卡名的卡在1回合只能发动1张。"
         );
         assert_eq!(
             normalize_description(

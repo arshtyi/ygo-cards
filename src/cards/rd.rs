@@ -12,7 +12,7 @@ use super::{
     LfSummary, WriteReport,
     images::ImageResolver,
     masks::{has_label, mapped_label, mapped_value, rd_masks},
-    text::normalize_newlines,
+    text::{normalize_newlines, strip_effect_text_note_lines},
 };
 use crate::json::write_pretty_sorted;
 
@@ -332,7 +332,8 @@ fn normalize_description(raw_description: &str) -> String {
     } else {
         description.as_str()
     };
-    let body = strip_leading_description_noise(body);
+    let body = strip_effect_text_note_lines(body);
+    let body = strip_leading_description_noise(&body);
 
     if body.trim().is_empty() {
         String::new()
@@ -651,6 +652,18 @@ mod tests {
                 "RD/MAX1-JP002\r\n极大攻击 3500\r\n可以和其他卡集齐作极大召唤。\r\n\r\n【条件】"
             ),
             String::from("可以和其他卡集齐作极大召唤。\n【条件】")
+        );
+        assert_eq!(
+            normalize_description(
+                "RD/TEST-JP001\r\n【条件】\r\n无\r\n（限制类效果可在基本分处查看）"
+            ),
+            String::from("【条件】\n无")
+        );
+        assert_eq!(
+            normalize_description(
+                "RD/TEST-JP002\r\n【条件】\r\n无\r\n（注：有bug，可以当2只上级盖放)"
+            ),
+            String::from("【条件】\n无")
         );
         assert_eq!(
             normalize_description("第一行\r\n第二行"),
