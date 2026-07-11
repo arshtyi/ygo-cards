@@ -42,8 +42,15 @@ fn collapse_consecutive_newlines(text: &str) -> String {
 
 fn is_effect_text_note_line(line: &str) -> bool {
     let line = line.trim();
-    line == "（限制类效果可在基本分处查看）"
-        || line == "（限制类效果可在基本分处查看)"
+    matches!(
+        line,
+        "（限制类效果可在基本分处查看）"
+            | "（限制类效果可在基本分处查看)"
+            | "（状态类效果可在基本分处查看）"
+            | "（状态类效果可在基本分处查看)"
+            | "（限制类和状态类效果可在基本分处查看）"
+            | "（限制类和状态类效果可在基本分处查看)"
+    )
         || (line.starts_with("（注：") && (line.ends_with('）') || line.ends_with(')')))
 }
 
@@ -66,6 +73,14 @@ mod tests {
         );
         assert_eq!(
             strip_effect_text_note_lines("正文\r\n（限制类效果可在基本分处查看）"),
+            "正文"
+        );
+        assert_eq!(
+            strip_effect_text_note_lines("正文\r\n（状态类效果可在基本分处查看）\r\n"),
+            "正文"
+        );
+        assert_eq!(
+            strip_effect_text_note_lines("正文\r\n（限制类和状态类效果可在基本分处查看）"),
             "正文"
         );
         assert_eq!(

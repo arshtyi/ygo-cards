@@ -678,9 +678,15 @@ mod tests {
         );
         assert_eq!(
             normalize_description(
-                "RD/TEST-JP001\r\n【条件】\r\n无\r\n（限制类效果可在基本分处查看）"
+                "RD/TEST-JP001\r\n【条件】\r\n无\r\n（状态类效果可在基本分处查看）\r\n"
             ),
             String::from("【条件】\n无")
+        );
+        assert_eq!(
+            normalize_description(
+                "RD/TEST-JP004\r\n【效果】\r\n正文\r\n（限制类和状态类效果可在基本分处查看）"
+            ),
+            String::from("【效果】\n正文")
         );
         assert_eq!(
             normalize_description(
