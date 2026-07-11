@@ -13,7 +13,10 @@ use reqwest::{
     header::RETRY_AFTER,
 };
 
-use crate::urls::{self, ResourceUrlKey, UrlConfig};
+use crate::{
+    http::{backoff_delay, is_retryable_status},
+    urls::{self, ResourceUrlKey, UrlConfig},
+};
 
 const ASSETS_DIR: &str = "assets";
 const MAX_DOWNLOAD_ATTEMPTS: u32 = 4;
@@ -206,18 +209,6 @@ fn send_with_retries(client: &Client, resource: &Resource<'_>) -> Result<Respons
     unreachable!("download attempts are bounded by MAX_DOWNLOAD_ATTEMPTS")
 }
 
-fn is_retryable_status(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::REQUEST_TIMEOUT
-            | StatusCode::TOO_MANY_REQUESTS
-            | StatusCode::INTERNAL_SERVER_ERROR
-            | StatusCode::BAD_GATEWAY
-            | StatusCode::SERVICE_UNAVAILABLE
-            | StatusCode::GATEWAY_TIMEOUT
-    )
-}
-
 fn retry_delay(response: &Response, attempt: u32) -> Duration {
     let delay = response
         .headers()
@@ -232,10 +223,6 @@ fn retry_delay(response: &Response, attempt: u32) -> Duration {
     } else {
         delay
     }
-}
-
-fn backoff_delay(attempt: u32) -> Duration {
-    Duration::from_secs(u64::from(attempt * attempt))
 }
 
 fn asset_path(resource: &Resource<'_>) -> PathBuf {

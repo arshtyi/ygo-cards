@@ -1,4 +1,4 @@
-pub(super) fn normalize_newlines(text: &str) -> String {
+pub(super) fn normalize_card_text(text: &str) -> String {
     collapse_consecutive_newlines(&text.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
@@ -59,10 +59,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_newlines() {
-        assert_eq!(normalize_newlines("a\r\nb"), "a\nb");
-        assert_eq!(normalize_newlines("a\r\r\n\r\nb"), "a\nb");
-        assert_eq!(normalize_newlines("a\n\n\nb"), "a\nb");
+    fn normalizes_card_text() {
+        assert_eq!(normalize_card_text("a\r\nb"), "a\nb");
+        assert_eq!(normalize_card_text("a\r\r\n\r\nb"), "a\nb");
+        assert_eq!(normalize_card_text("a\n\n\nb"), "a\nb");
     }
 
     #[test]

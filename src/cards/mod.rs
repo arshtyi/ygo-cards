@@ -1,6 +1,9 @@
 mod images;
+mod limit;
 mod masks;
 mod text;
+
+use std::{iter::Sum, ops::AddAssign};
 
 pub mod ot;
 pub mod rd;
@@ -41,10 +44,73 @@ impl ImageSummary {
     }
 }
 
+impl AddAssign for ImageSummary {
+    fn add_assign(&mut self, other: Self) {
+        self.enabled |= other.enabled;
+        self.cards_checked += other.cards_checked;
+        self.primary_found += other.primary_found;
+        self.alias_found += other.alias_found;
+        self.missing += other.missing;
+        self.unique_urls_found += other.unique_urls_found;
+        self.unique_urls_missing += other.unique_urls_missing;
+        self.network_errors += other.network_errors;
+        self.cache_hits += other.cache_hits;
+    }
+}
+
+impl Sum for ImageSummary {
+    fn sum<I>(iter: I) -> Self
+    where
+        I: Iterator<Item = Self>,
+    {
+        iter.fold(Self::default(), |mut total, summary| {
+            total += summary;
+            total
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ImageFailure {
     pub environment: &'static str,
     pub id: i64,
     pub name: String,
     pub alias: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sums_image_summaries() {
+        let total = [
+            ImageSummary {
+                enabled: true,
+                cards_checked: 2,
+                primary_found: 1,
+                missing: 1,
+                ..ImageSummary::default()
+            },
+            ImageSummary {
+                alias_found: 1,
+                unique_urls_found: 1,
+                unique_urls_missing: 2,
+                network_errors: 1,
+                cache_hits: 1,
+                ..ImageSummary::default()
+            },
+        ]
+        .into_iter()
+        .sum::<ImageSummary>();
+
+        assert!(total.enabled);
+        assert_eq!(total.cards_checked, 2);
+        assert_eq!(total.successful_cards(), 2);
+        assert_eq!(total.missing, 1);
+        assert_eq!(total.unique_urls_found, 1);
+        assert_eq!(total.unique_urls_missing, 2);
+        assert_eq!(total.network_errors, 1);
+        assert_eq!(total.cache_hits, 1);
+    }
 }

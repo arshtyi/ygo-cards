@@ -13,6 +13,7 @@ use reqwest::{
 };
 
 use super::{ImageFailure, ImageSummary};
+use crate::http::{backoff_delay, is_retryable_status};
 
 const MAX_IMAGE_CHECK_ATTEMPTS: u32 = 3;
 
@@ -62,9 +63,9 @@ impl ImageResolver {
         id: i64,
         name: &str,
         alias: i64,
-    ) -> Result<i64> {
+    ) -> i64 {
         if matches!(self.mode, ImageMode::UseCardId) {
-            return Ok(id);
+            return id;
         }
 
         self.summary.cards_checked += 1;
@@ -83,7 +84,7 @@ impl ImageResolver {
             });
         }
 
-        Ok(image)
+        image
     }
 
     pub(crate) fn summary(&self) -> ImageSummary {
@@ -259,18 +260,14 @@ fn image_url(base_url: &str, id: i64) -> String {
     format!("{}/{id}.jpg", base_url.trim_end_matches('/'))
 }
 
-fn resolve_image(mut id: i64, alias: i64, mut exists: impl FnMut(i64) -> bool) -> i64 {
+fn resolve_image(id: i64, alias: i64, mut exists: impl FnMut(i64) -> bool) -> i64 {
     if exists(id) {
-        return id;
-    }
-
-    if alias > 0 && exists(alias) {
-        id = alias;
+        id
+    } else if alias > 0 && exists(alias) {
+        alias
     } else {
-        id = 0;
+        0
     }
-
-    id
 }
 
 fn send_image_request_with_retries(client: &Client, method: Method, url: &str) -> Result<Response> {
@@ -305,22 +302,6 @@ fn is_image_response(response: &Response) -> bool {
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|content_type| content_type.starts_with("image/"))
-}
-
-fn is_retryable_status(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::REQUEST_TIMEOUT
-            | StatusCode::TOO_MANY_REQUESTS
-            | StatusCode::INTERNAL_SERVER_ERROR
-            | StatusCode::BAD_GATEWAY
-            | StatusCode::SERVICE_UNAVAILABLE
-            | StatusCode::GATEWAY_TIMEOUT
-    )
-}
-
-fn backoff_delay(attempt: u32) -> Duration {
-    Duration::from_secs(u64::from(attempt * attempt))
 }
 
 #[cfg(test)]

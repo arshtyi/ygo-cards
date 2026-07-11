@@ -1,11 +1,9 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::OnceLock,
-};
+use std::sync::OnceLock;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
+
+use crate::config::read_json;
 
 const URLS_CONFIG: &str = "config/urls.json";
 
@@ -94,20 +92,9 @@ impl UrlConfig {
 }
 
 fn load_urls() -> Result<UrlConfig> {
-    let config: UrlConfig = read_config(URLS_CONFIG)?;
+    let config: UrlConfig = read_json(URLS_CONFIG, "URL config")?;
     config.validate()?;
     Ok(config)
-}
-
-fn read_config<T>(path: &str) -> Result<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let path = manifest_path(path);
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read URL config {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse URL config {}", path.display()))
 }
 
 fn validate_url(field: &str, value: &str) -> Result<()> {
@@ -122,10 +109,6 @@ fn validate_url(field: &str, value: &str) -> Result<()> {
         bail!("URL config field {field} must use http or https: {trimmed}");
     }
     Ok(())
-}
-
-fn manifest_path(path: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
 }
 
 #[cfg(test)]

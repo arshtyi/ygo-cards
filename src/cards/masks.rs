@@ -1,11 +1,9 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::OnceLock,
-};
+use std::sync::OnceLock;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
+
+use crate::config::read_json;
 
 const OT_MASKS: &str = "config/ot-masks.json";
 const RD_MASKS: &str = "config/rd-masks.json";
@@ -83,28 +81,13 @@ pub(crate) fn has_label(labels: &[String], label: &str) -> bool {
 }
 
 fn load_ot_masks() -> Result<OtMasks> {
-    let raw: RawOtMasks = read_config(OT_MASKS)?;
+    let raw: RawOtMasks = read_json(OT_MASKS, "mask config")?;
     Ok(raw.into_masks())
 }
 
 fn load_rd_masks() -> Result<RdMasks> {
-    let raw: RawRdMasks = read_config(RD_MASKS)?;
+    let raw: RawRdMasks = read_json(RD_MASKS, "mask config")?;
     Ok(raw.into_masks())
-}
-
-fn read_config<T>(path: &str) -> Result<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let path = manifest_path(path);
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read mask config {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse mask config {}", path.display()))
-}
-
-fn manifest_path(path: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
 }
 
 #[derive(Debug, Deserialize)]
