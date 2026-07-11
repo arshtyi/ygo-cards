@@ -38,7 +38,7 @@ cargo test
 
 ## Field Definitions
 
-Canonical data-field definitions are maintained in [arshtyi/ygo-definations](https://github.com/arshtyi/ygo-definations).
+Canonical data-field definitions are maintained in [arshtyi/ygo-definitions](https://github.com/arshtyi/ygo-definitions).
 
 Bitmask mappings for attributes, types, races, link markers, and RD maximum markers are maintained in `config/ot-masks.json` and `config/rd-masks.json`.
 

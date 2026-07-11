@@ -62,7 +62,7 @@ Alias IDs are considered when matching forbidden-list entries.
 
 ## Field Definitions
 
-The authoritative field-definition reference lives in [arshtyi/ygo-definations](https://github.com/arshtyi/ygo-definations).
+The authoritative field-definition reference lives in [arshtyi/ygo-definitions](https://github.com/arshtyi/ygo-definitions).
 
 ## Scheduled Publishing
 

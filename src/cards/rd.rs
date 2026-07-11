@@ -310,7 +310,7 @@ fn normalize_maximum(
         return Some(first_position);
     }
 
-    if has_label(card_type, "极限") && parse_maximum_atk(raw_description).is_some() {
+    if has_label(card_type, "极大") && parse_maximum_atk(raw_description).is_some() {
         Some(Some(1))
     } else {
         Some(None)
@@ -333,12 +333,35 @@ fn normalize_description(raw_description: &str) -> String {
         description.as_str()
     };
     let body = strip_effect_text_note_lines(body);
+    let body = strip_special_adjustment_lines(&body);
     let body = strip_leading_description_noise(&body);
 
     if body.trim().is_empty() {
         String::new()
     } else {
         body.to_string()
+    }
+}
+
+fn strip_special_adjustment_lines(description: &str) -> String {
+    let mut removed = false;
+    let mut lines = Vec::new();
+
+    for line in description.lines() {
+        let trimmed = line.trim();
+        let is_special_adjustment = trimmed.starts_with("（特殊调整：")
+            && (trimmed.ends_with('）') || trimmed.ends_with(')'));
+        if is_special_adjustment {
+            removed = true;
+        } else {
+            lines.push(line);
+        }
+    }
+
+    if removed {
+        lines.join("\n")
+    } else {
+        description.to_string()
     }
 }
 
@@ -620,7 +643,7 @@ mod tests {
             image: 120150002,
             description: String::from("可以和其他卡集齐作极大召唤。"),
             legend: false,
-            r#type: labels(&["怪兽", "机械族", "极限", "效果"]),
+            r#type: labels(&["怪兽", "机械族", "极大", "效果"]),
             lf: 3,
             alias: 0,
             atk: Some(1900),
@@ -633,7 +656,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"id":120150002,"name":"超魔机神 大霸道王","attribute":1,"image":120150002,"description":"可以和其他卡集齐作极大召唤。","legend":false,"type":["怪兽","机械族","极限","效果"],"lf":3,"alias":0,"atk":1900,"def":0,"level":10,"maximum":1,"maximumAtk":3500}"#
+            r#"{"id":120150002,"name":"超魔机神 大霸道王","attribute":1,"image":120150002,"description":"可以和其他卡集齐作极大召唤。","legend":false,"type":["怪兽","机械族","极大","效果"],"lf":3,"alias":0,"atk":1900,"def":0,"level":10,"maximum":1,"maximumAtk":3500}"#
         );
     }
 
@@ -675,6 +698,16 @@ mod tests {
         );
         assert_eq!(normalize_description("RD/ONLY"), String::new());
         assert_eq!(normalize_description("RD/EMPTY\r\n  "), String::new());
+        assert_eq!(
+            normalize_description(
+                "RD/TEST-JP003\r\n【效果】\r\n正文\r\n（特殊调整：特殊召唤的怪兽不用给对方确认）"
+            ),
+            String::from("【效果】\n正文")
+        );
+        assert_eq!(
+            normalize_description("正文（特殊调整：这是正文的一部分）"),
+            String::from("正文（特殊调整：这是正文的一部分）")
+        );
     }
 
     #[test]
@@ -721,7 +754,7 @@ mod tests {
         );
         assert_eq!(
             parse_card_type(0x8021, 0x40000000),
-            some_labels(&["怪兽", "银河族", "极限", "效果"])
+            some_labels(&["怪兽", "银河族", "极大", "效果"])
         );
     }
 
@@ -753,21 +786,21 @@ mod tests {
     #[test]
     fn normalizes_maximum_positions() {
         assert_eq!(
-            normalize_maximum("超魔机神 大霸道王［L］", &labels(&["怪兽", "极限"]), "desc"),
+            normalize_maximum("超魔机神 大霸道王［L］", &labels(&["怪兽", "极大"]), "desc"),
             Some(Some(0))
         );
         assert_eq!(
-            normalize_maximum("超魔机神 大霸道王[M]", &labels(&["怪兽", "极限"]), "desc"),
+            normalize_maximum("超魔机神 大霸道王[M]", &labels(&["怪兽", "极大"]), "desc"),
             Some(Some(1))
         );
         assert_eq!(
-            normalize_maximum("超魔机神 大霸道王［R］", &labels(&["怪兽", "极限"]), "desc"),
+            normalize_maximum("超魔机神 大霸道王［R］", &labels(&["怪兽", "极大"]), "desc"),
             Some(Some(2))
         );
         assert_eq!(
             normalize_maximum(
                 "超魔机神 大霸道王",
-                &labels(&["怪兽", "极限"]),
+                &labels(&["怪兽", "极大"]),
                 "RD/MAX1-JP002\r\n极大攻击 3500\r\n正文"
             ),
             Some(Some(1))
@@ -775,7 +808,7 @@ mod tests {
         assert_eq!(
             normalize_maximum(
                 "外宇宙 安琪利瓦天愿",
-                &labels(&["怪兽", "极限"]),
+                &labels(&["怪兽", "极大"]),
                 "RD/ORP3-JP061\r\n手卡的这张卡的卡名变成「破界王帝 外宇宙界愿［L］」。"
             ),
             Some(None)
@@ -785,7 +818,7 @@ mod tests {
             Some(None)
         );
         assert_eq!(
-            normalize_maximum("异常［L］［R］", &labels(&["怪兽", "极限"]), "desc"),
+            normalize_maximum("异常［L］［R］", &labels(&["怪兽", "极大"]), "desc"),
             None
         );
     }
