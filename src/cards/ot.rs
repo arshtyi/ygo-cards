@@ -312,7 +312,7 @@ fn summarize_lf(cards: &[OtCard]) -> Vec<LfSummary> {
     let mut ocg = [0; 4];
     let mut tcg = [0; 4];
 
-    for card in cards {
+    for card in cards.iter().filter(|card| card.alias == 0) {
         if let Some(limit) = card
             .lf
             .first()
@@ -379,5 +379,35 @@ mod tests {
             json,
             r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"description":"A legendary dragon.","alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1],"atk":3000,"def":2500,"level":8}"#
         );
+    }
+
+    #[test]
+    fn summarizes_limits_for_original_cards_only() {
+        let card = |alias, lf| OtCard {
+            id: 1,
+            name: String::new(),
+            attribute: 0,
+            image: 1,
+            description: String::new(),
+            pendulum_description: None,
+            alias,
+            r#type: Vec::new(),
+            lf,
+            atk: None,
+            def: None,
+            level: None,
+            rank: None,
+            pendulum_scale: None,
+            link_value: None,
+            link_marker: None,
+        };
+        let summaries = summarize_lf(&[
+            card(0, vec![0, 1]),
+            card(123, vec![0, 1]),
+            card(0, vec![2, 3]),
+        ]);
+
+        assert_eq!(summaries[0].counts, [1, 0, 1, 0]);
+        assert_eq!(summaries[1].counts, [0, 1, 0, 1]);
     }
 }

@@ -272,7 +272,7 @@ fn build_card(
 fn summarize_lf(cards: &[RdCard]) -> Vec<LfSummary> {
     let mut counts = [0; 4];
 
-    for card in cards {
+    for card in cards.iter().filter(|card| card.alias == 0) {
         if let Ok(limit) = usize::try_from(card.lf) {
             if let Some(count) = counts.get_mut(limit) {
                 *count += 1;
@@ -318,6 +318,29 @@ mod tests {
             json,
             r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"image":120100001,"description":"【条件】\n无","legend":false,"type":["魔法"],"lf":3,"alias":0}"#
         );
+    }
+
+    #[test]
+    fn summarizes_limits_for_original_cards_only() {
+        let card = |alias, lf| RdCard {
+            id: 1,
+            name: String::new(),
+            attribute: 0,
+            image: 1,
+            description: String::new(),
+            legend: false,
+            r#type: Vec::new(),
+            lf,
+            alias,
+            atk: None,
+            def: None,
+            level: None,
+            maximum: None,
+            maximum_atk: None,
+        };
+        let summaries = summarize_lf(&[card(0, 0), card(123, 0), card(0, 2)]);
+
+        assert_eq!(summaries[0].counts, [1, 0, 1, 0]);
     }
 
     #[test]
