@@ -12,7 +12,7 @@ use reqwest::{
     header::{CONTENT_TYPE, RANGE},
 };
 
-use super::{FailedImageCheck, ImageFailure, ImageSummary};
+use super::{BuildOptions, FailedImageCheck, ImageFailure, ImageSummary};
 use crate::{
     diagnostics,
     http::{backoff_delay, is_retryable_status},
@@ -30,13 +30,13 @@ pub(crate) struct ImageResolver {
 }
 
 impl ImageResolver {
-    pub(crate) fn new(check_images: bool, skip_failures: bool) -> Result<Self> {
+    pub(crate) fn new(options: BuildOptions) -> Result<Self> {
         anyhow::ensure!(
-            check_images || !skip_failures,
+            options.check_images || !options.skip_image_failures,
             "skipping image failures requires image checks"
         );
 
-        let mode = if check_images {
+        let mode = if options.check_images {
             ImageMode::Checking {
                 client: Client::builder()
                     .user_agent(concat!(
@@ -57,8 +57,8 @@ impl ImageResolver {
             mode,
             cache: HashMap::new(),
             summary: ImageSummary {
-                enabled: check_images,
-                skip_failures,
+                enabled: options.check_images,
+                skip_failures: options.skip_image_failures,
                 ..ImageSummary::default()
             },
             failures: Vec::new(),
@@ -437,6 +437,13 @@ fn is_image_response(response: &Response) -> bool {
 mod tests {
     use super::*;
 
+    fn options(check_images: bool, skip_image_failures: bool) -> BuildOptions {
+        BuildOptions {
+            check_images,
+            skip_image_failures,
+        }
+    }
+
     #[test]
     fn builds_image_urls() {
         assert_eq!(
@@ -463,7 +470,7 @@ mod tests {
 
     #[test]
     fn keeps_cards_with_failed_images_by_default() {
-        let mut resolver = ImageResolver::new(true, false).unwrap();
+        let mut resolver = ImageResolver::new(options(true, false)).unwrap();
         resolver
             .cache
             .insert(100, ImageCheck::Missing(String::from("HTTP 404 Not Found")));
@@ -489,7 +496,7 @@ mod tests {
 
     #[test]
     fn skips_cards_with_failed_images_when_enabled() {
-        let mut resolver = ImageResolver::new(true, true).unwrap();
+        let mut resolver = ImageResolver::new(options(true, true)).unwrap();
         resolver
             .cache
             .insert(100, ImageCheck::Missing(String::from("HTTP 404 Not Found")));
@@ -505,7 +512,7 @@ mod tests {
 
     #[test]
     fn uses_an_available_alias_after_a_primary_failure() {
-        let mut resolver = ImageResolver::new(true, true).unwrap();
+        let mut resolver = ImageResolver::new(options(true, true)).unwrap();
         resolver
             .cache
             .insert(100, ImageCheck::Missing(String::from("HTTP 404 Not Found")));
@@ -518,7 +525,7 @@ mod tests {
 
     #[test]
     fn rejects_skipping_without_image_checks() {
-        let error = ImageResolver::new(false, true).unwrap_err();
+        let error = ImageResolver::new(options(false, true)).unwrap_err();
 
         assert_eq!(
             error.to_string(),

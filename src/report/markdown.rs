@@ -4,54 +4,11 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use ygo_cards::cards::{FailedImageCheck, ImageFailure, ImageSummary, WriteReport};
+use ygo_cards::cards::{FailedImageCheck, ImageFailure, WriteReport};
 
 use crate::latest::{LatestComparisonReport, LatestComparisonStatus};
 
-pub(crate) const SUMMARY_REPORT: &str = "output/report.md";
-
-pub(crate) fn print_write_report(report: &WriteReport) {
-    println!(
-        "wrote {} cards (skipped {}) -> {}",
-        report.cards_written,
-        report.cards_skipped,
-        report.path.display()
-    );
-
-    for summary in &report.lf_summaries {
-        println!(
-            "  {} lf: forbidden={} limit={} semi={} unlimited={}",
-            summary.label,
-            summary.counts[0],
-            summary.counts[1],
-            summary.counts[2],
-            summary.counts[3]
-        );
-    }
-
-    print_image_summary(report.image_summary);
-}
-
-fn print_image_summary(summary: ImageSummary) {
-    if !summary.enabled {
-        return;
-    }
-
-    println!(
-        "  images: success={} failed={} failure_action={} skipped={} primary={} alias={} checked_cards={} unique_found={} unique_missing={} cache_hits={} network_errors={}",
-        summary.successful_cards(),
-        summary.missing,
-        image_failure_action(summary),
-        summary.cards_skipped,
-        summary.primary_found,
-        summary.alias_found,
-        summary.cards_checked,
-        summary.unique_urls_found,
-        summary.unique_urls_missing,
-        summary.cache_hits,
-        summary.network_errors,
-    );
-}
+use super::{ReportTotals, image_failure_action};
 
 pub(crate) fn write_summary_report(
     reports: &[&WriteReport],
@@ -66,55 +23,6 @@ pub(crate) fn write_summary_report(
     let text = build_summary_report(reports, latest_comparisons);
     fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(path.to_path_buf())
-}
-
-pub(crate) fn print_summary_report(
-    reports: &[&WriteReport],
-    latest_comparisons: &[LatestComparisonReport],
-) {
-    let totals = ReportTotals::from_reports(reports);
-
-    println!("summary:");
-    println!(
-        "  cards: written={} skipped={}",
-        totals.cards_written, totals.cards_skipped
-    );
-    if totals.images.enabled {
-        println!(
-            "  images: success={} failed={} failure_action={} skipped={} network_errors={}",
-            totals.images.successful_cards(),
-            totals.image_failures,
-            image_failure_action(totals.images),
-            totals.images.cards_skipped,
-            totals.images.network_errors
-        );
-    }
-
-    for comparison in latest_comparisons {
-        match &comparison.status {
-            LatestComparisonStatus::Compared { previous_cards } => {
-                println!(
-                    "  {} new cards since latest: {} (previous={} current={})",
-                    comparison.label,
-                    comparison.added_cards.len(),
-                    previous_cards,
-                    comparison.current_cards
-                );
-            }
-            LatestComparisonStatus::NotFound => {
-                println!(
-                    "  {} new cards since latest: skipped (see build log)",
-                    comparison.label
-                );
-            }
-            LatestComparisonStatus::Unavailable(_) => {
-                println!(
-                    "  {} new cards since latest: skipped (see build log)",
-                    comparison.label
-                );
-            }
-        }
-    }
 }
 
 fn build_summary_report(
@@ -152,84 +60,83 @@ fn build_summary_report(
     report.push('\n');
 
     for environment_report in reports {
-        report.push_str(&format!("## {}\n\n", environment_report.label));
-        report.push_str("| Metric | Value |\n");
-        report.push_str("| --- | ---: |\n");
-        report.push_str(&format!(
-            "| Output | `{}` |\n| Cards written | {} |\n| Cards skipped | {} |\n\n",
-            environment_report.path.display(),
-            environment_report.cards_written,
-            environment_report.cards_skipped
-        ));
-
-        report.push_str("### Forbidden Lists\n\n");
-        report.push_str("| List | Forbidden | Limit | Semi | Unlimited |\n");
-        report.push_str("| --- | ---: | ---: | ---: | ---: |\n");
-        for summary in &environment_report.lf_summaries {
-            report.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
-                summary.label,
-                summary.counts[0],
-                summary.counts[1],
-                summary.counts[2],
-                summary.counts[3]
-            ));
-        }
-        report.push('\n');
-
-        if environment_report.image_summary.enabled {
-            report.push_str("### Images\n\n");
-            report.push_str("| Metric | Value |\n");
-            report.push_str("| --- | ---: |\n");
-            report.push_str(&format!(
-                "| Successful cards | {} |\n| Failed cards | {} |\n| On failure | {} |\n| Cards skipped after image failure | {} |\n| Primary hits | {} |\n| Alias hits | {} |\n| Checked cards | {} |\n| Unique URLs found | {} |\n| Unique URLs missing | {} |\n| Cache hits | {} |\n| Network errors | {} |\n\n",
-                environment_report.image_summary.successful_cards(),
-                environment_report.image_failures.len(),
-                image_failure_action(environment_report.image_summary),
-                environment_report.image_summary.cards_skipped,
-                environment_report.image_summary.primary_found,
-                environment_report.image_summary.alias_found,
-                environment_report.image_summary.cards_checked,
-                environment_report.image_summary.unique_urls_found,
-                environment_report.image_summary.unique_urls_missing,
-                environment_report.image_summary.cache_hits,
-                environment_report.image_summary.network_errors,
-            ));
-            append_image_failures(&mut report, &environment_report.image_failures);
-        }
+        append_environment_report(&mut report, environment_report);
     }
 
     if totals.images.enabled {
-        report.push_str("## Image Totals\n\n");
-        report.push_str("| Metric | Value |\n");
-        report.push_str("| --- | ---: |\n");
-        report.push_str(&format!(
-            "| Successful cards | {} |\n| Failed cards | {} |\n| On failure | {} |\n| Cards skipped after image failure | {} |\n| Primary hits | {} |\n| Alias hits | {} |\n| Checked cards | {} |\n| Unique URLs found | {} |\n| Unique URLs missing | {} |\n| Cache hits | {} |\n| Network errors | {} |\n",
-            totals.images.successful_cards(),
-            totals.image_failures,
-            image_failure_action(totals.images),
-            totals.images.cards_skipped,
-            totals.images.primary_found,
-            totals.images.alias_found,
-            totals.images.cards_checked,
-            totals.images.unique_urls_found,
-            totals.images.unique_urls_missing,
-            totals.images.cache_hits,
-            totals.images.network_errors
-        ));
+        append_image_totals(&mut report, &totals);
     }
 
     append_latest_comparison_report(&mut report, latest_comparisons);
-
     report
 }
 
-fn image_failure_action(summary: ImageSummary) -> &'static str {
-    if summary.skip_failures {
-        "skip card"
-    } else {
-        "keep card with image = 0"
+fn append_environment_report(report: &mut String, environment_report: &WriteReport) {
+    report.push_str(&format!("## {}\n\n", environment_report.label));
+    report.push_str("| Metric | Value |\n");
+    report.push_str("| --- | ---: |\n");
+    report.push_str(&format!(
+        "| Output | `{}` |\n| Cards written | {} |\n| Cards skipped | {} |\n\n",
+        environment_report.path.display(),
+        environment_report.cards_written,
+        environment_report.cards_skipped
+    ));
+
+    report.push_str("### Forbidden Lists\n\n");
+    report.push_str("| List | Forbidden | Limit | Semi | Unlimited |\n");
+    report.push_str("| --- | ---: | ---: | ---: | ---: |\n");
+    for summary in &environment_report.lf_summaries {
+        report.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            summary.label,
+            summary.counts[0],
+            summary.counts[1],
+            summary.counts[2],
+            summary.counts[3]
+        ));
     }
+    report.push('\n');
+
+    if environment_report.image_summary.enabled {
+        report.push_str("### Images\n\n");
+        report.push_str("| Metric | Value |\n");
+        report.push_str("| --- | ---: |\n");
+        report.push_str(&format!(
+            "| Successful cards | {} |\n| Failed cards | {} |\n| On failure | {} |\n| Cards skipped after image failure | {} |\n| Primary hits | {} |\n| Alias hits | {} |\n| Checked cards | {} |\n| Unique URLs found | {} |\n| Unique URLs missing | {} |\n| Cache hits | {} |\n| Network errors | {} |\n\n",
+            environment_report.image_summary.successful_cards(),
+            environment_report.image_failures.len(),
+            image_failure_action(environment_report.image_summary),
+            environment_report.image_summary.cards_skipped,
+            environment_report.image_summary.primary_found,
+            environment_report.image_summary.alias_found,
+            environment_report.image_summary.cards_checked,
+            environment_report.image_summary.unique_urls_found,
+            environment_report.image_summary.unique_urls_missing,
+            environment_report.image_summary.cache_hits,
+            environment_report.image_summary.network_errors,
+        ));
+        append_image_failures(report, &environment_report.image_failures);
+    }
+}
+
+fn append_image_totals(report: &mut String, totals: &ReportTotals) {
+    report.push_str("## Image Totals\n\n");
+    report.push_str("| Metric | Value |\n");
+    report.push_str("| --- | ---: |\n");
+    report.push_str(&format!(
+        "| Successful cards | {} |\n| Failed cards | {} |\n| On failure | {} |\n| Cards skipped after image failure | {} |\n| Primary hits | {} |\n| Alias hits | {} |\n| Checked cards | {} |\n| Unique URLs found | {} |\n| Unique URLs missing | {} |\n| Cache hits | {} |\n| Network errors | {} |\n",
+        totals.images.successful_cards(),
+        totals.image_failures,
+        image_failure_action(totals.images),
+        totals.images.cards_skipped,
+        totals.images.primary_found,
+        totals.images.alias_found,
+        totals.images.cards_checked,
+        totals.images.unique_urls_found,
+        totals.images.unique_urls_missing,
+        totals.images.cache_hits,
+        totals.images.network_errors
+    ));
 }
 
 fn append_image_failures(report: &mut String, failures: &[ImageFailure]) {
@@ -361,33 +268,13 @@ fn card_type_display(card_type: &[String]) -> String {
     }
 }
 
-struct ReportTotals {
-    cards_written: usize,
-    cards_skipped: usize,
-    images: ImageSummary,
-    image_failures: usize,
-}
-
-impl ReportTotals {
-    fn from_reports(reports: &[&WriteReport]) -> Self {
-        Self {
-            cards_written: reports.iter().map(|report| report.cards_written).sum(),
-            cards_skipped: reports.iter().map(|report| report.cards_skipped).sum(),
-            images: reports.iter().map(|report| report.image_summary).sum(),
-            image_failures: reports
-                .iter()
-                .map(|report| report.image_failures.len())
-                .sum(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use super::*;
     use crate::latest::CardSummary;
+    use ygo_cards::cards::ImageSummary;
 
     fn card(id: i64, name: &str, card_type: &[&str]) -> CardSummary {
         CardSummary {

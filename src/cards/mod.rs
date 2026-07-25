@@ -1,12 +1,36 @@
 mod images;
 mod limit;
 mod masks;
+mod rejection;
 mod text;
 
-use std::{iter::Sum, ops::AddAssign};
+use std::{
+    fs,
+    iter::Sum,
+    ops::AddAssign,
+    path::Path,
+};
+
+use anyhow::{Context, Result};
+use serde::Serialize;
 
 pub mod ot;
 pub mod rd;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BuildOptions {
+    pub check_images: bool,
+    pub skip_image_failures: bool,
+}
+
+fn write_cards(path: &Path, cards: &impl Serialize) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create output directory {}", parent.display()))?;
+    }
+
+    crate::json::write_pretty_sorted(path, cards)
+}
 
 #[derive(Debug)]
 pub struct WriteReport {

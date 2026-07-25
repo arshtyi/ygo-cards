@@ -79,15 +79,7 @@ pub struct DownloadedResource {
 
 pub fn download_all() -> Result<Vec<DownloadedResource>> {
     let url_config = urls::urls()?;
-    let client = Client::builder()
-        .user_agent(concat!(
-            env!("CARGO_PKG_NAME"),
-            "/",
-            env!("CARGO_PKG_VERSION")
-        ))
-        .timeout(Duration::from_secs(120))
-        .build()
-        .context("failed to build resource download HTTP client")?;
+    let client = resource_client()?;
 
     RESOURCE_DEFINITIONS
         .iter()
@@ -100,15 +92,7 @@ pub fn download_all() -> Result<Vec<DownloadedResource>> {
 
 pub fn ensure_all() -> Result<()> {
     let url_config = urls::urls()?;
-    let client = Client::builder()
-        .user_agent(concat!(
-            env!("CARGO_PKG_NAME"),
-            "/",
-            env!("CARGO_PKG_VERSION")
-        ))
-        .timeout(Duration::from_secs(120))
-        .build()
-        .context("failed to build resource download HTTP client")?;
+    let client = resource_client()?;
 
     for definition in RESOURCE_DEFINITIONS {
         let resource = definition.to_resource(url_config);
@@ -120,6 +104,18 @@ pub fn ensure_all() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn resource_client() -> Result<Client> {
+    Client::builder()
+        .user_agent(concat!(
+            env!("CARGO_PKG_NAME"),
+            "/",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .context("failed to build resource download HTTP client")
 }
 
 fn download_resource(client: &Client, resource: &Resource<'_>) -> Result<DownloadedResource> {

@@ -19,6 +19,23 @@ struct BuildLog {
     records: usize,
 }
 
+#[derive(Clone, Copy)]
+enum Level {
+    Info,
+    Warning,
+    Error,
+}
+
+impl fmt::Display for Level {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Info => "INFO",
+            Self::Warning => "WARN",
+            Self::Error => "ERROR",
+        })
+    }
+}
+
 impl BuildLog {
     fn create(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -45,7 +62,7 @@ impl BuildLog {
         })
     }
 
-    fn write(&mut self, level: &str, message: fmt::Arguments<'_>) {
+    fn write(&mut self, level: Level, message: fmt::Arguments<'_>) {
         if self.write_error.is_some() {
             return;
         }
@@ -59,7 +76,7 @@ impl BuildLog {
     fn finish(&mut self) -> Result<()> {
         if self.records == 0 {
             self.write(
-                "INFO",
+                Level::Info,
                 format_args!("build completed without warnings or errors"),
             );
         }
@@ -76,7 +93,7 @@ impl BuildLog {
 
 fn write_record(
     writer: &mut impl Write,
-    level: &str,
+    level: Level,
     message: fmt::Arguments<'_>,
 ) -> io::Result<()> {
     writeln!(writer, "[{level}] {message}")
@@ -92,11 +109,11 @@ pub fn init() -> Result<PathBuf> {
 }
 
 pub fn warning(message: fmt::Arguments<'_>) {
-    write("WARN", message);
+    write(Level::Warning, message);
 }
 
 pub fn error(message: fmt::Arguments<'_>) {
-    write("ERROR", message);
+    write(Level::Error, message);
 }
 
 pub fn install_panic_hook() {
@@ -106,7 +123,7 @@ pub fn install_panic_hook() {
     }));
 }
 
-fn write(level: &str, message: fmt::Arguments<'_>) {
+fn write(level: Level, message: fmt::Arguments<'_>) {
     let Some(log) = BUILD_LOG.get() else {
         return;
     };
@@ -136,7 +153,7 @@ mod tests {
 
         write_record(
             &mut output,
-            "WARN",
+            Level::Warning,
             format_args!("card id={} failed", 42),
         )
         .unwrap();

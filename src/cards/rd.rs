@@ -2,10 +2,7 @@ mod limits;
 mod normalization;
 mod types;
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -18,8 +15,10 @@ use self::{
     },
     types::{is_legend, normalize_attribute, parse_card_type},
 };
-use super::{LfSummary, WriteReport, images::ImageResolver, masks::ensure_rd_masks};
-use crate::{diagnostics, json::write_pretty_sorted};
+use super::{
+    BuildOptions, LfSummary, WriteReport, images::ImageResolver, masks::ensure_rd_masks, rejection,
+    write_cards,
+};
 
 const CARDS_DB: &str = "assets/rd/rd_standard.cdb";
 const LFLIST: &str = "assets/rd/lflist.conf";
@@ -63,26 +62,14 @@ struct CardRow {
     level: i64,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct BuildOptions {
-    pub check_images: bool,
-    pub skip_image_failures: bool,
-}
-
 pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
     ensure_rd_masks()?;
     let lf_list = read_lf_list(Path::new(LFLIST))?;
-    let mut images =
-        ImageResolver::new(options.check_images, options.skip_image_failures)?;
+    let mut images = ImageResolver::new(options)?;
     let read_report = read_cards(Path::new(CARDS_DB), &lf_list, &mut images)?;
     let path = PathBuf::from(OUTPUT_JSON);
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create output directory {}", parent.display()))?;
-    }
-
-    write_pretty_sorted(&path, &read_report.cards)?;
+    write_cards(&path, &read_report.cards)?;
 
     Ok(WriteReport {
         label: "RD",
@@ -171,10 +158,7 @@ fn read_cards(
             }
             Err(error) => {
                 cards_skipped += 1;
-                diagnostics::warning(format_args!(
-                    "skip RD database row: row_number={} reason=failed to decode SQLite row: {error}",
-                    row_index + 1
-                ));
+                rejection::database_row("RD", row_index + 1, &error);
             }
         }
         images.advance_progress();
@@ -193,60 +177,58 @@ fn build_card(
     images: &mut ImageResolver,
 ) -> Option<RdCard> {
     if row.id <= 0 {
-        diagnostics::warning(format_args!(
-            "skip RD card: id={} name={:?} reason=ID must be positive",
+        rejection::card(
+            "RD",
             row.id,
-            row.name.as_deref()
-        ));
+            row.name.as_deref(),
+            format_args!("ID must be positive"),
+        );
         return None;
     }
 
     let Some(name) = row.name else {
-        diagnostics::warning(format_args!(
-            "skip RD card: id={} reason=name is missing from the texts table",
-            row.id
-        ));
+        rejection::card(
+            "RD",
+            row.id,
+            None,
+            format_args!("name is missing from the texts table"),
+        );
         return None;
     };
+    let rejection = rejection::Card::new("RD", row.id, &name);
 
     if name.trim().is_empty() {
-        diagnostics::warning(format_args!(
-            "skip RD card: id={} name={name:?} reason=name is empty or whitespace-only",
-            row.id
-        ));
+        rejection.warning(format_args!("name is empty or whitespace-only"));
         return None;
     }
 
     let Some(raw_description) = row.description.as_deref() else {
-        diagnostics::warning(format_args!(
-            "skip RD card: id={} name={name:?} reason=description is missing from the texts table",
-            row.id
-        ));
+        rejection.warning(format_args!("description is missing from the texts table"));
         return None;
     };
 
     let description = normalize_description(raw_description);
 
     let Some(attribute) = normalize_attribute(row.attribute) else {
-        diagnostics::warning(format_args!(
-            "skip RD card: id={} name={name:?} reason=unsupported attribute value={} ({:#x})",
-            row.id, row.attribute, row.attribute
+        rejection.warning(format_args!(
+            "unsupported attribute value={} ({:#x})",
+            row.attribute, row.attribute
         ));
         return None;
     };
 
     if row.alias < 0 {
-        diagnostics::warning(format_args!(
-            "skip RD card: id={} name={name:?} reason=alias must be non-negative; alias={}",
-            row.id, row.alias
+        rejection.warning(format_args!(
+            "alias must be non-negative; alias={}",
+            row.alias
         ));
         return None;
     }
 
     let Some(card_type) = parse_card_type(row.card_type, row.race) else {
-        diagnostics::warning(format_args!(
-            "skip RD card: id={} name={name:?} reason=unsupported type or race bitmask; type={} ({:#x}) race={} ({:#x})",
-            row.id, row.card_type, row.card_type, row.race, row.race
+        rejection.warning(format_args!(
+            "unsupported type or race bitmask; type={} ({:#x}) race={} ({:#x})",
+            row.card_type, row.card_type, row.race, row.race
         ));
         return None;
     };
@@ -255,16 +237,14 @@ fn build_card(
     let defense = monster_value(row.defense, &card_type);
     let level = monster_value(row.level, &card_type);
     let Some(maximum) = normalize_maximum(&name, &card_type, raw_description) else {
-        diagnostics::warning(format_args!(
-            "skip RD card: id={} name={name:?} reason=maximum position could not be normalized for card_type={card_type:?}",
-            row.id
+        rejection.warning(format_args!(
+            "maximum position could not be normalized for card_type={card_type:?}"
         ));
         return None;
     };
     let Some(maximum_atk) = normalize_maximum_atk(maximum, raw_description) else {
-        diagnostics::warning(format_args!(
-            "skip RD card: id={} name={name:?} reason=maximum ATK could not be parsed; maximum_position={maximum:?}",
-            row.id
+        rejection.warning(format_args!(
+            "maximum ATK could not be parsed; maximum_position={maximum:?}"
         ));
         return None;
     };
@@ -417,7 +397,7 @@ mod tests {
     #[test]
     fn rejects_invalid_rows() {
         let lf_list = LfList::default();
-        let mut images = ImageResolver::new(false, false).unwrap();
+        let mut images = ImageResolver::new(BuildOptions::default()).unwrap();
 
         assert!(
             build_card(
@@ -538,7 +518,7 @@ mod tests {
     #[test]
     fn keeps_empty_descriptions() {
         let lf_list = LfList::default();
-        let mut images = ImageResolver::new(false, false).unwrap();
+        let mut images = ImageResolver::new(BuildOptions::default()).unwrap();
         let card = build_card(
             CardRow {
                 id: 120287001,
