@@ -1,32 +1,27 @@
-use anyhow::{Result, bail};
+use clap::Parser;
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Parser, PartialEq, Eq)]
+#[command(
+    version,
+    about = "Generate normalized Yu-Gi-Oh! card data for OT and RD environments"
+)]
 pub(crate) struct Options {
+    /// Download fresh upstream resources before generating card data
+    #[arg(long)]
     pub(crate) refresh_resources: bool,
+
+    /// Check primary and alias images; failed checks use image 0 by default
+    #[arg(long)]
     pub(crate) check_images: bool,
+
+    /// Skip cards whose primary and alias images both fail (requires --check-images)
+    #[arg(long, requires = "check_images")]
+    pub(crate) skip_image_failures: bool,
 }
 
 impl Options {
-    pub(crate) fn parse() -> Result<Self> {
-        Self::parse_from(std::env::args().skip(1))
-    }
-
-    fn parse_from<I, S>(args: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let mut options = Self::default();
-
-        for arg in args {
-            match arg.as_ref() {
-                "--refresh-resources" => options.refresh_resources = true,
-                "--check-images" => options.check_images = true,
-                arg => bail!("unknown option: {arg}"),
-            }
-        }
-
-        Ok(options)
+    pub(crate) fn parse() -> Self {
+        <Self as Parser>::parse()
     }
 }
 
@@ -36,24 +31,54 @@ mod tests {
 
     #[test]
     fn parses_empty_arguments() {
-        assert_eq!(Options::parse_from::<_, &str>([]).unwrap(), Options::default());
+        assert_eq!(
+            Options::try_parse_from(["ygo-cards"]).unwrap(),
+            Options::default()
+        );
     }
 
     #[test]
     fn parses_supported_options() {
         assert_eq!(
-            Options::parse_from(["--refresh-resources", "--check-images"]).unwrap(),
+            Options::try_parse_from([
+                "ygo-cards",
+                "--refresh-resources",
+                "--check-images",
+                "--skip-image-failures",
+            ])
+            .unwrap(),
             Options {
                 refresh_resources: true,
                 check_images: true,
+                skip_image_failures: true,
             }
         );
     }
 
     #[test]
-    fn rejects_unknown_options() {
-        let error = Options::parse_from(["--unknown"]).unwrap_err();
+    fn requires_image_checks_when_skipping_image_failures() {
+        let error =
+            Options::try_parse_from(["ygo-cards", "--skip-image-failures"]).unwrap_err();
 
-        assert_eq!(error.to_string(), "unknown option: --unknown");
+        assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn provides_help() {
+        let error = Options::try_parse_from(["ygo-cards", "--help"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(help.contains("--refresh-resources"));
+        assert!(help.contains("--check-images"));
+        assert!(help.contains("--skip-image-failures"));
+    }
+
+    #[test]
+    fn provides_version() {
+        let error = Options::try_parse_from(["ygo-cards", "--version"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
     }
 }

@@ -13,7 +13,7 @@ use report::{
 };
 
 fn main() -> Result<()> {
-    let options = Options::parse()?;
+    let options = Options::parse();
 
     if options.refresh_resources {
         for resource in ygo_cards::resources::download_all()? {
@@ -30,11 +30,13 @@ fn main() -> Result<()> {
 
     let ot_report = ygo_cards::cards::ot::write_json(ygo_cards::cards::ot::BuildOptions {
         check_images: options.check_images,
+        skip_image_failures: options.skip_image_failures,
     })?;
     print_write_report(&ot_report);
 
     let rd_report = ygo_cards::cards::rd::write_json(ygo_cards::cards::rd::BuildOptions {
         check_images: options.check_images,
+        skip_image_failures: options.skip_image_failures,
     })?;
     print_write_report(&rd_report);
 

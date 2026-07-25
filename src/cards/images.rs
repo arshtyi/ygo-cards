@@ -27,7 +27,12 @@ pub(crate) struct ImageResolver {
 }
 
 impl ImageResolver {
-    pub(crate) fn new(check_images: bool) -> Result<Self> {
+    pub(crate) fn new(check_images: bool, skip_failures: bool) -> Result<Self> {
+        anyhow::ensure!(
+            check_images || !skip_failures,
+            "skipping image failures requires image checks"
+        );
+
         let mode = if check_images {
             ImageMode::Checking {
                 client: Client::builder()
@@ -50,6 +55,7 @@ impl ImageResolver {
             cache: HashMap::new(),
             summary: ImageSummary {
                 enabled: check_images,
+                skip_failures,
                 ..ImageSummary::default()
             },
             failures: Vec::new(),
@@ -63,28 +69,37 @@ impl ImageResolver {
         id: i64,
         name: &str,
         alias: i64,
-    ) -> i64 {
+    ) -> Option<i64> {
         if matches!(self.mode, ImageMode::UseCardId) {
-            return id;
+            return Some(id);
         }
 
         self.summary.cards_checked += 1;
-        let image = resolve_image(id, alias, |image_id| self.exists(image_id));
-        if image == id {
-            self.summary.primary_found += 1;
-        } else if alias > 0 && image == alias {
-            self.summary.alias_found += 1;
-        } else {
-            self.summary.missing += 1;
-            self.failures.push(ImageFailure {
-                environment,
-                id,
-                name: name.to_string(),
-                alias,
-            });
+        match resolve_image(id, alias, |image_id| self.exists(image_id)) {
+            Some(image) => {
+                if image == id {
+                    self.summary.primary_found += 1;
+                } else {
+                    self.summary.alias_found += 1;
+                }
+                Some(image)
+            }
+            None => {
+                self.summary.missing += 1;
+                self.failures.push(ImageFailure {
+                    environment,
+                    id,
+                    name: name.to_string(),
+                    alias,
+                });
+                if self.summary.skip_failures {
+                    self.summary.cards_skipped += 1;
+                    None
+                } else {
+                    Some(0)
+                }
+            }
         }
-
-        image
     }
 
     pub(crate) fn summary(&self) -> ImageSummary {
@@ -260,13 +275,13 @@ fn image_url(base_url: &str, id: i64) -> String {
     format!("{}/{id}.jpg", base_url.trim_end_matches('/'))
 }
 
-fn resolve_image(id: i64, alias: i64, mut exists: impl FnMut(i64) -> bool) -> i64 {
+fn resolve_image(id: i64, alias: i64, mut exists: impl FnMut(i64) -> bool) -> Option<i64> {
     if exists(id) {
-        id
+        Some(id)
     } else if alias > 0 && exists(alias) {
-        alias
+        Some(alias)
     } else {
-        0
+        None
     }
 }
 
@@ -318,9 +333,43 @@ mod tests {
 
     #[test]
     fn resolves_image_id_with_alias_fallback() {
-        assert_eq!(resolve_image(100, 200, |id| id == 100), 100);
-        assert_eq!(resolve_image(100, 200, |id| id == 200), 200);
-        assert_eq!(resolve_image(100, 0, |_| false), 0);
-        assert_eq!(resolve_image(100, 200, |_| false), 0);
+        assert_eq!(resolve_image(100, 200, |id| id == 100), Some(100));
+        assert_eq!(resolve_image(100, 200, |id| id == 200), Some(200));
+        assert_eq!(resolve_image(100, 0, |_| false), None);
+        assert_eq!(resolve_image(100, 200, |_| false), None);
+    }
+
+    #[test]
+    fn keeps_cards_with_failed_images_by_default() {
+        let mut resolver = ImageResolver::new(true, false).unwrap();
+        resolver.cache.insert(100, false);
+        resolver.cache.insert(200, false);
+
+        assert_eq!(resolver.resolve("OT", 100, "Card", 200), Some(0));
+        assert_eq!(resolver.summary().missing, 1);
+        assert_eq!(resolver.summary().cards_skipped, 0);
+        assert_eq!(resolver.failures().len(), 1);
+    }
+
+    #[test]
+    fn skips_cards_with_failed_images_when_enabled() {
+        let mut resolver = ImageResolver::new(true, true).unwrap();
+        resolver.cache.insert(100, false);
+        resolver.cache.insert(200, false);
+
+        assert_eq!(resolver.resolve("OT", 100, "Card", 200), None);
+        assert_eq!(resolver.summary().missing, 1);
+        assert_eq!(resolver.summary().cards_skipped, 1);
+        assert_eq!(resolver.failures().len(), 1);
+    }
+
+    #[test]
+    fn rejects_skipping_without_image_checks() {
+        let error = ImageResolver::new(false, true).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "skipping image failures requires image checks"
+        );
     }
 }

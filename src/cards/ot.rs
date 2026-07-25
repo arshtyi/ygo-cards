@@ -76,11 +76,13 @@ struct CardRow {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BuildOptions {
     pub check_images: bool,
+    pub skip_image_failures: bool,
 }
 
 pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
     let lf_lists = read_lf_lists(Path::new(LFLIST))?;
-    let mut images = ImageResolver::new(options.check_images)?;
+    let mut images =
+        ImageResolver::new(options.check_images, options.skip_image_failures)?;
     let read_report = read_cards(Path::new(CARDS_DB), &lf_lists, &mut images)?;
     let path = PathBuf::from(OUTPUT_JSON);
 
@@ -286,7 +288,13 @@ fn build_card(
         return None;
     };
 
-    let image = images.resolve("OT", row.id, &name, row.alias);
+    let Some(image) = images.resolve("OT", row.id, &name, row.alias) else {
+        eprintln!(
+            "skip OT card {} ({}): primary and alias image checks failed",
+            row.id, name
+        );
+        return None;
+    };
 
     Some(OtCard {
         id: row.id,

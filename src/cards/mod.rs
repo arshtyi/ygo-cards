@@ -28,10 +28,12 @@ pub struct LfSummary {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImageSummary {
     pub enabled: bool,
+    pub skip_failures: bool,
     pub cards_checked: usize,
     pub primary_found: usize,
     pub alias_found: usize,
     pub missing: usize,
+    pub cards_skipped: usize,
     pub unique_urls_found: usize,
     pub unique_urls_missing: usize,
     pub network_errors: usize,
@@ -47,10 +49,12 @@ impl ImageSummary {
 impl AddAssign for ImageSummary {
     fn add_assign(&mut self, other: Self) {
         self.enabled |= other.enabled;
+        self.skip_failures |= other.skip_failures;
         self.cards_checked += other.cards_checked;
         self.primary_found += other.primary_found;
         self.alias_found += other.alias_found;
         self.missing += other.missing;
+        self.cards_skipped += other.cards_skipped;
         self.unique_urls_found += other.unique_urls_found;
         self.unique_urls_missing += other.unique_urls_missing;
         self.network_errors += other.network_errors;
@@ -87,9 +91,11 @@ mod tests {
         let total = [
             ImageSummary {
                 enabled: true,
+                skip_failures: true,
                 cards_checked: 2,
                 primary_found: 1,
                 missing: 1,
+                cards_skipped: 1,
                 ..ImageSummary::default()
             },
             ImageSummary {
@@ -105,9 +111,11 @@ mod tests {
         .sum::<ImageSummary>();
 
         assert!(total.enabled);
+        assert!(total.skip_failures);
         assert_eq!(total.cards_checked, 2);
         assert_eq!(total.successful_cards(), 2);
         assert_eq!(total.missing, 1);
+        assert_eq!(total.cards_skipped, 1);
         assert_eq!(total.unique_urls_found, 1);
         assert_eq!(total.unique_urls_missing, 2);
         assert_eq!(total.network_errors, 1);

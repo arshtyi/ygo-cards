@@ -39,9 +39,11 @@ fn print_image_summary(summary: ImageSummary) {
     }
 
     println!(
-        "  images: success={} failed={} primary={} alias={} checked_cards={} unique_found={} unique_missing={} cache_hits={} network_errors={}",
+        "  images: success={} failed={} failure_action={} skipped={} primary={} alias={} checked_cards={} unique_found={} unique_missing={} cache_hits={} network_errors={}",
         summary.successful_cards(),
         summary.missing,
+        image_failure_action(summary),
+        summary.cards_skipped,
         summary.primary_found,
         summary.alias_found,
         summary.cards_checked,
@@ -94,9 +96,11 @@ pub(crate) fn print_summary_report(
     );
     if totals.images.enabled {
         println!(
-            "  images: success={} failed={} network_errors={}",
+            "  images: success={} failed={} failure_action={} skipped={} network_errors={}",
             totals.images.successful_cards(),
             totals.image_failures,
+            image_failure_action(totals.images),
+            totals.images.cards_skipped,
             totals.images.network_errors
         );
     }
@@ -142,13 +146,21 @@ fn build_summary_report(
     report.push_str(&format!("| Cards written | {} |\n", totals.cards_written));
     report.push_str(&format!("| Cards skipped | {} |\n", totals.cards_skipped));
     report.push_str(&format!(
-        "| Image check | {} |\n\n",
+        "| Image check | {} |\n",
         if totals.images.enabled {
             "enabled"
         } else {
             "disabled"
         }
     ));
+    if totals.images.enabled {
+        report.push_str(&format!(
+            "| On image failure | {} |\n| Cards skipped after image failure | {} |\n",
+            image_failure_action(totals.images),
+            totals.images.cards_skipped
+        ));
+    }
+    report.push('\n');
 
     for environment_report in reports {
         report.push_str(&format!("## {}\n\n", environment_report.label));
@@ -181,9 +193,11 @@ fn build_summary_report(
             report.push_str("| Metric | Value |\n");
             report.push_str("| --- | ---: |\n");
             report.push_str(&format!(
-                "| Successful cards | {} |\n| Failed cards | {} |\n| Primary hits | {} |\n| Alias hits | {} |\n| Checked cards | {} |\n| Unique URLs found | {} |\n| Unique URLs missing | {} |\n| Cache hits | {} |\n| Network errors | {} |\n\n",
+                "| Successful cards | {} |\n| Failed cards | {} |\n| On failure | {} |\n| Cards skipped after image failure | {} |\n| Primary hits | {} |\n| Alias hits | {} |\n| Checked cards | {} |\n| Unique URLs found | {} |\n| Unique URLs missing | {} |\n| Cache hits | {} |\n| Network errors | {} |\n\n",
                 environment_report.image_summary.successful_cards(),
                 environment_report.image_failures.len(),
+                image_failure_action(environment_report.image_summary),
+                environment_report.image_summary.cards_skipped,
                 environment_report.image_summary.primary_found,
                 environment_report.image_summary.alias_found,
                 environment_report.image_summary.cards_checked,
@@ -201,9 +215,11 @@ fn build_summary_report(
         report.push_str("| Metric | Value |\n");
         report.push_str("| --- | ---: |\n");
         report.push_str(&format!(
-            "| Successful cards | {} |\n| Failed cards | {} |\n| Primary hits | {} |\n| Alias hits | {} |\n| Checked cards | {} |\n| Unique URLs found | {} |\n| Unique URLs missing | {} |\n| Cache hits | {} |\n| Network errors | {} |\n",
+            "| Successful cards | {} |\n| Failed cards | {} |\n| On failure | {} |\n| Cards skipped after image failure | {} |\n| Primary hits | {} |\n| Alias hits | {} |\n| Checked cards | {} |\n| Unique URLs found | {} |\n| Unique URLs missing | {} |\n| Cache hits | {} |\n| Network errors | {} |\n",
             totals.images.successful_cards(),
             totals.image_failures,
+            image_failure_action(totals.images),
+            totals.images.cards_skipped,
             totals.images.primary_found,
             totals.images.alias_found,
             totals.images.cards_checked,
@@ -217,6 +233,14 @@ fn build_summary_report(
     append_latest_comparison_report(&mut report, latest_comparisons);
 
     report
+}
+
+fn image_failure_action(summary: ImageSummary) -> &'static str {
+    if summary.skip_failures {
+        "skip card"
+    } else {
+        "keep card with image = 0"
+    }
 }
 
 fn append_image_failures(report: &mut String, failures: &[ImageFailure]) {
@@ -332,6 +356,8 @@ impl ReportTotals {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::latest::CardSummary;
 
@@ -373,5 +399,47 @@ mod tests {
         assert!(report.contains("## New Cards Since Latest Release"));
         assert!(report.contains("| New cards | 1 |"));
         assert!(report.contains("| 2 | New\\|Card | 怪兽/龙族/通常 |"));
+    }
+
+    #[test]
+    fn reports_image_failure_policy_and_skipped_count() {
+        let environment_report = WriteReport {
+            label: "OT",
+            path: PathBuf::from("output/ot.json"),
+            cards_written: 9,
+            cards_skipped: 1,
+            lf_summaries: Vec::new(),
+            image_summary: ImageSummary {
+                enabled: true,
+                skip_failures: true,
+                cards_checked: 10,
+                primary_found: 9,
+                missing: 1,
+                cards_skipped: 1,
+                ..ImageSummary::default()
+            },
+            image_failures: vec![ImageFailure {
+                environment: "OT",
+                id: 1,
+                name: String::from("Missing Image"),
+                alias: 0,
+            }],
+        };
+
+        let report = build_summary_report(&[&environment_report], &[]);
+
+        assert!(report.contains("| On image failure | skip card |"));
+        assert!(report.contains("| On failure | skip card |"));
+        assert!(report.contains("| Cards skipped after image failure | 1 |"));
+
+        let mut default_report = environment_report;
+        default_report.cards_written = 10;
+        default_report.cards_skipped = 0;
+        default_report.image_summary.skip_failures = false;
+        default_report.image_summary.cards_skipped = 0;
+        let report = build_summary_report(&[&default_report], &[]);
+
+        assert!(report.contains("| On image failure | keep card with image = 0 |"));
+        assert!(report.contains("| Cards skipped after image failure | 0 |"));
     }
 }

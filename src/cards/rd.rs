@@ -66,11 +66,13 @@ struct CardRow {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BuildOptions {
     pub check_images: bool,
+    pub skip_image_failures: bool,
 }
 
 pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
     let lf_list = read_lf_list(Path::new(LFLIST))?;
-    let mut images = ImageResolver::new(options.check_images)?;
+    let mut images =
+        ImageResolver::new(options.check_images, options.skip_image_failures)?;
     let read_report = read_cards(Path::new(CARDS_DB), &lf_list, &mut images)?;
     let path = PathBuf::from(OUTPUT_JSON);
 
@@ -232,7 +234,6 @@ fn build_card(
         return None;
     };
 
-    let image = images.resolve("RD", row.id, &name, row.alias);
     let atk = monster_value(row.atk, &card_type);
     let defense = monster_value(row.defense, &card_type);
     let level = monster_value(row.level, &card_type);
@@ -247,6 +248,13 @@ fn build_card(
         eprintln!(
             "skip RD card {} ({}): invalid maximum atk for maximum {:?}",
             row.id, name, maximum
+        );
+        return None;
+    };
+    let Some(image) = images.resolve("RD", row.id, &name, row.alias) else {
+        eprintln!(
+            "skip RD card {} ({}): primary and alias image checks failed",
+            row.id, name
         );
         return None;
     };
@@ -398,7 +406,7 @@ mod tests {
     #[test]
     fn rejects_invalid_rows() {
         let lf_list = LfList::default();
-        let mut images = ImageResolver::new(false).unwrap();
+        let mut images = ImageResolver::new(false, false).unwrap();
 
         assert!(
             build_card(
@@ -519,7 +527,7 @@ mod tests {
     #[test]
     fn keeps_empty_descriptions() {
         let lf_list = LfList::default();
-        let mut images = ImageResolver::new(false).unwrap();
+        let mut images = ImageResolver::new(false, false).unwrap();
         let card = build_card(
             CardRow {
                 id: 120287001,
