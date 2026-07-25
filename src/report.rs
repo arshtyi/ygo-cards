@@ -30,7 +30,6 @@ pub(crate) fn print_write_report(report: &WriteReport) {
     }
 
     print_image_summary(report.image_summary);
-    print_image_failures(&report.image_failures);
 }
 
 fn print_image_summary(summary: ImageSummary) {
@@ -51,35 +50,6 @@ fn print_image_summary(summary: ImageSummary) {
         summary.unique_urls_missing,
         summary.cache_hits,
         summary.network_errors,
-    );
-}
-
-fn print_image_failures(failures: &[ImageFailure]) {
-    if failures.is_empty() {
-        return;
-    }
-
-    println!("  image failed cards:");
-    for failure in failures {
-        println!(
-            "    {} id={} alias={} name={:?} action={}",
-            failure.environment,
-            failure.id,
-            failure.alias,
-            failure.name,
-            failed_card_action(failure.card_skipped)
-        );
-        print_failed_image_check("primary", &failure.primary);
-        if let Some(alias) = &failure.alias_check {
-            print_failed_image_check("alias", alias);
-        }
-    }
-}
-
-fn print_failed_image_check(role: &str, check: &FailedImageCheck) {
-    println!(
-        "      {role}: image_id={} url={} reason={}",
-        check.image_id, check.url, check.reason
     );
 }
 
@@ -133,14 +103,14 @@ pub(crate) fn print_summary_report(
             }
             LatestComparisonStatus::NotFound => {
                 println!(
-                    "  {} new cards since latest: skipped (latest asset not found)",
+                    "  {} new cards since latest: skipped (see build log)",
                     comparison.label
                 );
             }
-            LatestComparisonStatus::Unavailable(reason) => {
+            LatestComparisonStatus::Unavailable(_) => {
                 println!(
-                    "  {} new cards since latest: skipped ({})",
-                    comparison.label, reason
+                    "  {} new cards since latest: skipped (see build log)",
+                    comparison.label
                 );
             }
         }
@@ -160,6 +130,10 @@ fn build_summary_report(
     report.push_str("| --- | ---: |\n");
     report.push_str(&format!("| Cards written | {} |\n", totals.cards_written));
     report.push_str(&format!("| Cards skipped | {} |\n", totals.cards_skipped));
+    report.push_str(&format!(
+        "| Build log | `{}` |\n",
+        ygo_cards::diagnostics::BUILD_LOG_PATH
+    ));
     report.push_str(&format!(
         "| Image check | {} |\n",
         if totals.images.enabled {
@@ -496,6 +470,7 @@ mod tests {
         assert!(report.contains("| On image failure | skip card |"));
         assert!(report.contains("| On failure | skip card |"));
         assert!(report.contains("| Cards skipped after image failure | 1 |"));
+        assert!(report.contains("| Build log | `output/build.log` |"));
         assert!(report.contains("| OT | 1 | 2 | Missing \\| Image | skipped |"));
         assert!(report.contains(
             "| OT | 1 | primary | 1 | https://example.test/1.jpg | HTTP 404 Not Found |"

@@ -11,8 +11,8 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::{LfSummary, WriteReport, images::ImageResolver};
-use crate::json::write_pretty_sorted;
+use super::{LfSummary, WriteReport, images::ImageResolver, masks::ensure_ot_masks};
+use crate::{diagnostics, json::write_pretty_sorted};
 
 use self::{
     limits::{LfLists, read_lf_lists},
@@ -80,6 +80,7 @@ pub struct BuildOptions {
 }
 
 pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
+    ensure_ot_masks()?;
     let lf_lists = read_lf_lists(Path::new(LFLIST))?;
     let mut images =
         ImageResolver::new(options.check_images, options.skip_image_failures)?;
@@ -130,7 +131,7 @@ fn read_cards(
             order by datas.id
             ",
         )
-        .context("failed to prepare card query")?;
+        .context("failed to prepare OT card query")?;
     let rows = statement
         .query_map([], |row| {
             Ok(CardRow {
@@ -146,11 +147,11 @@ fn read_cards(
                 level: row.get(9)?,
             })
         })
-        .context("failed to query cards")?;
+        .context("failed to query OT cards")?;
 
     let mut cards = Vec::new();
     let mut cards_skipped = 0;
-    for row in rows {
+    for (row_index, row) in rows.enumerate() {
         match row {
             Ok(row) => {
                 if let Some(card) = build_card(row, lf_lists, images) {
@@ -161,7 +162,10 @@ fn read_cards(
             }
             Err(error) => {
                 cards_skipped += 1;
-                eprintln!("skip OT card row: failed to read database row: {error}");
+                diagnostics::warning(format_args!(
+                    "skip OT database row: row_number={} reason=failed to decode SQLite row: {error}",
+                    row_index + 1
+                ));
             }
         }
         images.advance_progress();
@@ -180,121 +184,128 @@ fn build_card(
     images: &mut ImageResolver,
 ) -> Option<OtCard> {
     if row.id <= 0 {
-        eprintln!("skip card: invalid id {}", row.id);
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={:?} reason=ID must be positive",
+            row.id,
+            row.name.as_deref()
+        ));
         return None;
     }
 
     let Some(name) = row.name else {
-        eprintln!("skip card {}: missing name", row.id);
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} reason=name is missing from the texts table",
+            row.id
+        ));
         return None;
     };
 
     if name.trim().is_empty() {
-        eprintln!("skip card {}: empty name", row.id);
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=name is empty or whitespace-only",
+            row.id
+        ));
         return None;
     }
 
     let Some(raw_description) = row.description else {
-        eprintln!("skip OT card {} ({}): missing description", row.id, name);
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=description is missing from the texts table",
+            row.id
+        ));
         return None;
     };
 
     let Some(attribute) = normalize_attribute(row.attribute) else {
-        eprintln!(
-            "skip OT card {} ({}): invalid attribute {} ({:#x})",
-            row.id, name, row.attribute, row.attribute
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=unsupported attribute value={} ({:#x})",
+            row.id, row.attribute, row.attribute
+        ));
         return None;
     };
 
     if row.alias < 0 {
-        eprintln!(
-            "skip OT card {} ({}): invalid alias {}",
-            row.id, name, row.alias
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=alias must be non-negative; alias={}",
+            row.id, row.alias
+        ));
         return None;
     }
 
     let Some(card_type) = parse_card_type(row.card_type, row.race) else {
-        eprintln!(
-            "skip OT card {} ({}): invalid type {} ({:#x}) or race {} ({:#x})",
-            row.id, name, row.card_type, row.card_type, row.race, row.race
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=unsupported type or race bitmask; type={} ({:#x}) race={} ({:#x})",
+            row.id, row.card_type, row.card_type, row.race, row.race
+        ));
         return None;
     };
 
     let Some(description) = normalize_description(&raw_description, &card_type) else {
-        eprintln!(
-            "skip OT card {} ({}): invalid description for type {:?}",
-            row.id, name, card_type
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=description format is invalid for card_type={card_type:?}",
+            row.id
+        ));
         return None;
     };
     let Some(pendulum_description) = normalize_pendulum_description(&raw_description, &card_type)
     else {
-        eprintln!(
-            "skip OT card {} ({}): invalid pendulum description",
-            row.id, name
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=pendulum description format is invalid for card_type={card_type:?}",
+            row.id
+        ));
         return None;
     };
     let Some(atk) = normalize_atk(row.atk, &card_type) else {
-        eprintln!(
-            "skip OT card {} ({}): invalid atk {}",
-            row.id, name, row.atk
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=invalid ATK value={} for card_type={card_type:?}",
+            row.id, row.atk
+        ));
         return None;
     };
     let Some(def) = normalize_def(row.defense, &card_type) else {
-        eprintln!(
-            "skip OT card {} ({}): invalid def {}",
-            row.id, name, row.defense
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=invalid DEF value={} for card_type={card_type:?}",
+            row.id, row.defense
+        ));
         return None;
     };
     let Some(level) = normalize_level(row.level, &card_type) else {
-        eprintln!(
-            "skip OT card {} ({}): invalid level {}",
-            row.id, name, row.level
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=invalid packed level value={} for card_type={card_type:?}",
+            row.id, row.level
+        ));
         return None;
     };
     let Some(rank) = normalize_rank(row.level, &card_type) else {
-        eprintln!(
-            "skip OT card {} ({}): invalid rank {}",
-            row.id, name, row.level
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=invalid packed rank value={} for card_type={card_type:?}",
+            row.id, row.level
+        ));
         return None;
     };
     let Some(pendulum_scale) = normalize_pendulum_scale(row.level, &card_type) else {
-        eprintln!(
-            "skip OT card {} ({}): invalid pendulum scale {}",
-            row.id, name, row.level
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=invalid packed pendulum scale value={} for card_type={card_type:?}",
+            row.id, row.level
+        ));
         return None;
     };
     let Some(link_value) = normalize_link_value(row.level, &card_type) else {
-        eprintln!(
-            "skip OT card {} ({}): invalid link value {}",
-            row.id, name, row.level
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=invalid packed link value={} for card_type={card_type:?}",
+            row.id, row.level
+        ));
         return None;
     };
     let Some(link_marker) = normalize_link_marker(row.defense, &card_type) else {
-        eprintln!(
-            "skip OT card {} ({}): invalid link marker {}",
-            row.id, name, row.defense
-        );
+        diagnostics::warning(format_args!(
+            "skip OT card: id={} name={name:?} reason=invalid link marker bitmask={} ({:#x}) for card_type={card_type:?}",
+            row.id, row.defense, row.defense
+        ));
         return None;
     };
 
-    let Some(image) = images.resolve("OT", row.id, &name, row.alias) else {
-        eprintln!(
-            "skip OT card {} ({}): primary and alias image checks failed",
-            row.id, name
-        );
-        return None;
-    };
+    let image = images.resolve("OT", row.id, &name, row.alias)?;
 
     Some(OtCard {
         id: row.id,

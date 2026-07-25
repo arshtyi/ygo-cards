@@ -20,8 +20,8 @@ pub(crate) struct Options {
 }
 
 impl Options {
-    pub(crate) fn parse() -> Self {
-        <Self as Parser>::parse()
+    pub(crate) fn try_parse() -> Result<Self, clap::Error> {
+        <Self as Parser>::try_parse()
     }
 }
 

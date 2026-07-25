@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::{
     Method, StatusCode,
     blocking::{Client, Response},
@@ -13,7 +13,10 @@ use reqwest::{
 };
 
 use super::{FailedImageCheck, ImageFailure, ImageSummary};
-use crate::http::{backoff_delay, is_retryable_status};
+use crate::{
+    diagnostics,
+    http::{backoff_delay, is_retryable_status},
+};
 
 const MAX_IMAGE_CHECK_ATTEMPTS: u32 = 3;
 
@@ -95,6 +98,17 @@ impl ImageResolver {
 
         self.summary.missing += 1;
         let card_skipped = self.summary.skip_failures;
+        diagnostics::warning(format_args!(
+            "card image resolution failed: environment={} card_id={} alias={} name={name:?} action={} reason=no primary or distinct alias image candidate passed validation",
+            environment,
+            id,
+            alias,
+            if card_skipped {
+                "skipped"
+            } else {
+                "kept with image=0"
+            }
+        ));
         self.failures.push(ImageFailure {
             environment,
             id,
@@ -145,7 +159,7 @@ impl ImageResolver {
         };
         progress.current = progress.total;
         self.draw_progress();
-        eprintln!();
+        println!();
         self.progress = None;
     }
 
@@ -157,7 +171,7 @@ impl ImageResolver {
         let width = 30;
         let filled = progress.current.saturating_mul(width) / progress.total.max(1);
         let empty = width - filled;
-        eprint!(
+        print!(
             "\r{} [{}{}] {}/{}",
             progress.label,
             "#".repeat(filled),
@@ -165,7 +179,7 @@ impl ImageResolver {
             progress.current.min(progress.total),
             progress.total
         );
-        let _ = io::stderr().flush();
+        let _ = io::stdout().flush();
     }
 
     fn check(&mut self, id: i64) -> ImageCheck {
@@ -182,29 +196,45 @@ impl ImageResolver {
             ImageCheck::Missing(_) => {
                 self.summary.unique_urls_missing += 1;
             }
-            ImageCheck::NetworkError(error) => {
+            ImageCheck::NetworkError(_) => {
                 self.summary.network_errors += 1;
                 self.summary.unique_urls_missing += 1;
-                if let Some(url) = self.image_url(id) {
-                    eprintln!("image check failed for {url}: {error}");
-                } else {
-                    eprintln!("image check failed for {id}: {error}");
-                }
             }
+        }
+        if let Some((kind, reason)) = result.failure_details() {
+            let url = self.image_url(id).unwrap_or_else(|| {
+                diagnostics::error(format_args!(
+                    "internal image diagnostic error: image_id={id} reason=checking mode has no image URL"
+                ));
+                format!("{id}.jpg")
+            });
+            diagnostics::warning(format_args!(
+                "image candidate check failed: image_id={} url={} kind={} reason={reason}",
+                id, url, kind
+            ));
         }
         self.cache.insert(id, result.clone());
         result
     }
 
     fn failed_check(&self, id: i64, result: ImageCheck) -> FailedImageCheck {
+        let url = self.image_url(id).unwrap_or_else(|| {
+            diagnostics::error(format_args!(
+                "internal image diagnostic error: image_id={id} reason=failed check has no image URL"
+            ));
+            format!("{id}.jpg")
+        });
+        let reason = result.failure_reason().unwrap_or_else(|| {
+            diagnostics::error(format_args!(
+                "internal image diagnostic error: image_id={id} reason=successful result was recorded as a failed check"
+            ));
+            String::from("internal error: missing failure reason")
+        });
+
         FailedImageCheck {
             image_id: id,
-            url: self
-                .image_url(id)
-                .expect("failed image checks only exist in checking mode"),
-            reason: result
-                .failure_reason()
-                .expect("failed image check must include a failure reason"),
+            url,
+            reason,
         }
     }
 
@@ -297,6 +327,14 @@ impl ImageCheck {
         }
     }
 
+    fn failure_details(&self) -> Option<(&'static str, &str)> {
+        match self {
+            Self::Found => None,
+            Self::Missing(reason) => Some(("http-or-content", reason)),
+            Self::NetworkError(reason) => Some(("network", reason)),
+        }
+    }
+
     fn with_context(self, context: &str) -> Self {
         match self {
             Self::Found => Self::Found,
@@ -348,21 +386,42 @@ fn send_image_request_with_retries(client: &Client, method: Method, url: &str) -
         match request.send() {
             Ok(response) if !is_retryable_status(response.status()) => return Ok(response),
             Ok(response) if attempt == MAX_IMAGE_CHECK_ATTEMPTS => return Ok(response),
-            Ok(_) | Err(_) if attempt < MAX_IMAGE_CHECK_ATTEMPTS => {
-                thread::sleep(backoff_delay(attempt));
+            Ok(response) => {
+                let delay = backoff_delay(attempt);
+                diagnostics::warning(format_args!(
+                    "image request will be retried: method={} url={} attempt={}/{} status=\"HTTP {}\" retry_in={}s",
+                    method,
+                    url,
+                    attempt,
+                    MAX_IMAGE_CHECK_ATTEMPTS,
+                    response.status(),
+                    delay.as_secs()
+                ));
+                thread::sleep(delay);
             }
-            Ok(response) => return Ok(response),
+            Err(error) if attempt < MAX_IMAGE_CHECK_ATTEMPTS => {
+                let delay = backoff_delay(attempt);
+                diagnostics::warning(format_args!(
+                    "image request will be retried: method={} url={} attempt={}/{} reason={error}; retry_in={}s",
+                    method,
+                    url,
+                    attempt,
+                    MAX_IMAGE_CHECK_ATTEMPTS,
+                    delay.as_secs()
+                ));
+                thread::sleep(delay);
+            }
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!(
-                        "failed to check image {url} after {MAX_IMAGE_CHECK_ATTEMPTS} attempts"
+                        "failed to check image with {method} {url} after {MAX_IMAGE_CHECK_ATTEMPTS} attempts"
                     )
                 });
             }
         }
     }
 
-    unreachable!("image check attempts are bounded by MAX_IMAGE_CHECK_ATTEMPTS")
+    bail!("image request loop ended unexpectedly: method={method} url={url}")
 }
 
 fn is_image_response(response: &Response) -> bool {

@@ -34,6 +34,7 @@ jobs:
           test -s output/ot.json
           test -s output/rd.json
           test -s output/report.md
+          test -s output/build.log
 
       - name: Publish latest release
         env:
@@ -50,6 +51,8 @@ jobs:
           gh release create "$TAG" \
             output/ot.json \
             output/rd.json \
+            output/report.md \
+            output/build.log \
             --title "$TITLE" \
             --notes-file output/report.md \
             --latest

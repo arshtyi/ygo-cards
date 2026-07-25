@@ -8,6 +8,9 @@ use crate::config::read_json;
 const OT_MASKS: &str = "config/ot-masks.json";
 const RD_MASKS: &str = "config/rd-masks.json";
 
+static OT_MASK_CACHE: OnceLock<std::result::Result<OtMasks, String>> = OnceLock::new();
+static RD_MASK_CACHE: OnceLock<std::result::Result<RdMasks, String>> = OnceLock::new();
+
 #[derive(Debug)]
 pub(crate) struct ValueEntry {
     pub(crate) bit: i64,
@@ -49,17 +52,25 @@ pub(crate) struct RdMasks {
 }
 
 pub(crate) fn ot_masks() -> &'static OtMasks {
-    static MASKS: OnceLock<OtMasks> = OnceLock::new();
-    MASKS.get_or_init(|| {
-        load_ot_masks().unwrap_or_else(|error| panic!("failed to load OT mask config: {error:#}"))
-    })
+    ensure_ot_masks().expect("OT masks must be validated before card normalization")
 }
 
 pub(crate) fn rd_masks() -> &'static RdMasks {
-    static MASKS: OnceLock<RdMasks> = OnceLock::new();
-    MASKS.get_or_init(|| {
-        load_rd_masks().unwrap_or_else(|error| panic!("failed to load RD mask config: {error:#}"))
-    })
+    ensure_rd_masks().expect("RD masks must be validated before card normalization")
+}
+
+pub(crate) fn ensure_ot_masks() -> Result<&'static OtMasks> {
+    OT_MASK_CACHE
+        .get_or_init(|| load_ot_masks().map_err(|error| format!("{error:#}")))
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("failed to load OT mask config: {error}"))
+}
+
+pub(crate) fn ensure_rd_masks() -> Result<&'static RdMasks> {
+    RD_MASK_CACHE
+        .get_or_init(|| load_rd_masks().map_err(|error| format!("{error:#}")))
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("failed to load RD mask config: {error}"))
 }
 
 pub(crate) fn mapped_value(entries: &[ValueEntry], raw: i64) -> Option<i64> {
@@ -255,11 +266,11 @@ mod tests {
 
     #[test]
     fn loads_mask_configs() {
-        let ot = ot_masks();
+        let ot = ensure_ot_masks().unwrap();
         assert_eq!(mapped_value(&ot.attributes, 0x40), Some(0));
         assert_eq!(mapped_label(&ot.races, 0x2000), Some(String::from("龙族")));
 
-        let rd = rd_masks();
+        let rd = ensure_rd_masks().unwrap();
         assert_eq!(rd.legend_type, 0x8);
         assert_eq!(
             mapped_label(&rd.races, -0x80000000),

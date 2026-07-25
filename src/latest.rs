@@ -44,8 +44,18 @@ fn compare_latest_release_file(
                 added_cards,
             )
         }
-        LatestCardsFetch::NotFound => (LatestComparisonStatus::NotFound, Vec::new()),
+        LatestCardsFetch::NotFound => {
+            ygo_cards::diagnostics::warning(format_args!(
+                "latest release comparison skipped: environment={} url={} reason=HTTP 404 Not Found",
+                report.label, latest_url
+            ));
+            (LatestComparisonStatus::NotFound, Vec::new())
+        }
         LatestCardsFetch::Unavailable(reason) => {
+            ygo_cards::diagnostics::warning(format_args!(
+                "latest release comparison skipped: environment={} url={} reason={reason}",
+                report.label, latest_url
+            ));
             (LatestComparisonStatus::Unavailable(reason), Vec::new())
         }
     };

@@ -14,6 +14,7 @@ use reqwest::{
 };
 
 use crate::{
+    diagnostics,
     http::{backoff_delay, is_retryable_status},
     urls::{self, ResourceUrlKey, UrlConfig},
 };
@@ -86,7 +87,7 @@ pub fn download_all() -> Result<Vec<DownloadedResource>> {
         ))
         .timeout(Duration::from_secs(120))
         .build()
-        .context("failed to build HTTP client")?;
+        .context("failed to build resource download HTTP client")?;
 
     RESOURCE_DEFINITIONS
         .iter()
@@ -107,7 +108,7 @@ pub fn ensure_all() -> Result<()> {
         ))
         .timeout(Duration::from_secs(120))
         .build()
-        .context("failed to build HTTP client")?;
+        .context("failed to build resource download HTTP client")?;
 
     for definition in RESOURCE_DEFINITIONS {
         let resource = definition.to_resource(url_config);
@@ -132,7 +133,12 @@ fn download_resource(client: &Client, resource: &Resource<'_>) -> Result<Downloa
     let mut last_error = None;
 
     for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
-        let _ = fs::remove_file(&temp_path);
+        if let Err(error) = remove_file_if_exists(&temp_path) {
+            diagnostics::warning(format_args!(
+                "failed to remove stale temporary asset: path={} reason={error}; continuing",
+                temp_path.display()
+            ));
+        }
         match download_resource_once(client, resource, &path, &temp_path) {
             Ok(bytes) => {
                 return Ok(DownloadedResource {
@@ -143,13 +149,15 @@ fn download_resource(client: &Client, resource: &Resource<'_>) -> Result<Downloa
             }
             Err(error) if attempt < MAX_DOWNLOAD_ATTEMPTS => {
                 let delay = backoff_delay(attempt);
-                eprintln!(
-                    "download attempt {}/{} failed for {}: {error}; retrying in {}s",
+                diagnostics::warning(format_args!(
+                    "resource download attempt failed: resource={:?} url={} destination={} attempt={}/{} reason={error:#}; retry_in={}s",
+                    resource.name,
+                    resource.url,
+                    path.display(),
                     attempt,
                     MAX_DOWNLOAD_ATTEMPTS,
-                    resource.name,
                     delay.as_secs()
-                );
+                ));
                 last_error = Some(error);
                 thread::sleep(delay);
             }
@@ -157,8 +165,18 @@ fn download_resource(client: &Client, resource: &Resource<'_>) -> Result<Downloa
         }
     }
 
-    Err(last_error.expect("download loop always records the last error"))
-        .with_context(|| format!("failed to download {}", resource.name))
+    let last_error = last_error.context(format!(
+        "resource download loop ended without an error: resource={:?} url={}",
+        resource.name, resource.url
+    ))?;
+    Err(last_error).with_context(|| {
+        format!(
+            "failed to download {} from {} to {}",
+            resource.name,
+            resource.url,
+            path.display()
+        )
+    })
 }
 
 fn download_resource_once(
@@ -172,8 +190,13 @@ fn download_resource_once(
     let bytes = write_response(&mut response, temp_path)
         .with_context(|| format!("failed to write temporary asset {}", temp_path.display()))?;
     validate_download_size(resource, bytes, expected_length)?;
-    replace_file(temp_path, path)
-        .with_context(|| format!("failed to move asset into place {}", path.display()))?;
+    replace_file(temp_path, path).with_context(|| {
+        format!(
+            "failed to move temporary asset {} into place at {}",
+            temp_path.display(),
+            path.display()
+        )
+    })?;
 
     Ok(bytes)
 }
@@ -193,20 +216,47 @@ fn send_with_retries(client: &Client, resource: &Resource<'_>) -> Result<Respons
                     );
                 }
 
-                thread::sleep(retry_delay(&response, attempt));
+                let delay = retry_delay(&response, attempt);
+                diagnostics::warning(format_args!(
+                    "resource request will be retried: resource={:?} url={} attempt={}/{} status=\"HTTP {}\" retry_in={}s",
+                    resource.name,
+                    resource.url,
+                    attempt,
+                    MAX_DOWNLOAD_ATTEMPTS,
+                    status,
+                    delay.as_secs()
+                ));
+                thread::sleep(delay);
             }
             Err(error) => {
                 if attempt == MAX_DOWNLOAD_ATTEMPTS {
-                    return Err(error)
-                        .with_context(|| format!("failed to download {}", resource.name));
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to download {} from {} after {} attempts",
+                            resource.name, resource.url, MAX_DOWNLOAD_ATTEMPTS
+                        )
+                    });
                 }
 
-                thread::sleep(backoff_delay(attempt));
+                let delay = backoff_delay(attempt);
+                diagnostics::warning(format_args!(
+                    "resource request will be retried: resource={:?} url={} attempt={}/{} reason={error}; retry_in={}s",
+                    resource.name,
+                    resource.url,
+                    attempt,
+                    MAX_DOWNLOAD_ATTEMPTS,
+                    delay.as_secs()
+                ));
+                thread::sleep(delay);
             }
         }
     }
 
-    unreachable!("download attempts are bounded by MAX_DOWNLOAD_ATTEMPTS")
+    bail!(
+        "resource request loop ended unexpectedly for {} from {}",
+        resource.name,
+        resource.url
+    )
 }
 
 fn retry_delay(response: &Response, attempt: u32) -> Duration {
@@ -289,23 +339,45 @@ fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
     let had_existing = to.exists();
 
     if had_existing {
-        let _ = fs::remove_file(&backup);
+        remove_file_if_exists(&backup)?;
         fs::rename(to, &backup)?;
     }
 
     match fs::rename(from, to) {
         Ok(()) => {
             if had_existing {
-                let _ = fs::remove_file(backup);
+                if let Err(error) = remove_file_if_exists(&backup) {
+                    diagnostics::warning(format_args!(
+                        "failed to remove replaced asset backup: path={} reason={error}",
+                        backup.display()
+                    ));
+                }
             }
             Ok(())
         }
         Err(error) => {
             if had_existing {
-                let _ = fs::rename(&backup, to);
+                if let Err(restore_error) = fs::rename(&backup, to) {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!(
+                            "failed to install {}: {error}; also failed to restore backup {}: {restore_error}",
+                            to.display(),
+                            backup.display()
+                        ),
+                    ));
+                }
             }
             Err(error)
         }
+    }
+}
+
+fn remove_file_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 

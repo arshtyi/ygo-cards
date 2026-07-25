@@ -18,8 +18,8 @@ use self::{
     },
     types::{is_legend, normalize_attribute, parse_card_type},
 };
-use super::{LfSummary, WriteReport, images::ImageResolver};
-use crate::json::write_pretty_sorted;
+use super::{LfSummary, WriteReport, images::ImageResolver, masks::ensure_rd_masks};
+use crate::{diagnostics, json::write_pretty_sorted};
 
 const CARDS_DB: &str = "assets/rd/rd_standard.cdb";
 const LFLIST: &str = "assets/rd/lflist.conf";
@@ -70,6 +70,7 @@ pub struct BuildOptions {
 }
 
 pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
+    ensure_rd_masks()?;
     let lf_list = read_lf_list(Path::new(LFLIST))?;
     let mut images =
         ImageResolver::new(options.check_images, options.skip_image_failures)?;
@@ -159,7 +160,7 @@ fn read_cards(
 
     let mut cards = Vec::new();
     let mut cards_skipped = 0;
-    for row in rows {
+    for (row_index, row) in rows.enumerate() {
         match row {
             Ok(row) => {
                 if let Some(card) = build_card(row, lf_list, images) {
@@ -170,7 +171,10 @@ fn read_cards(
             }
             Err(error) => {
                 cards_skipped += 1;
-                eprintln!("skip RD card row: failed to read database row: {error}");
+                diagnostics::warning(format_args!(
+                    "skip RD database row: row_number={} reason=failed to decode SQLite row: {error}",
+                    row_index + 1
+                ));
             }
         }
         images.advance_progress();
@@ -189,48 +193,61 @@ fn build_card(
     images: &mut ImageResolver,
 ) -> Option<RdCard> {
     if row.id <= 0 {
-        eprintln!("skip RD card: invalid id {}", row.id);
+        diagnostics::warning(format_args!(
+            "skip RD card: id={} name={:?} reason=ID must be positive",
+            row.id,
+            row.name.as_deref()
+        ));
         return None;
     }
 
     let Some(name) = row.name else {
-        eprintln!("skip RD card {}: missing name", row.id);
+        diagnostics::warning(format_args!(
+            "skip RD card: id={} reason=name is missing from the texts table",
+            row.id
+        ));
         return None;
     };
 
     if name.trim().is_empty() {
-        eprintln!("skip RD card {}: empty name", row.id);
+        diagnostics::warning(format_args!(
+            "skip RD card: id={} name={name:?} reason=name is empty or whitespace-only",
+            row.id
+        ));
         return None;
     }
 
     let Some(raw_description) = row.description.as_deref() else {
-        eprintln!("skip RD card {} ({}): missing description", row.id, name);
+        diagnostics::warning(format_args!(
+            "skip RD card: id={} name={name:?} reason=description is missing from the texts table",
+            row.id
+        ));
         return None;
     };
 
     let description = normalize_description(raw_description);
 
     let Some(attribute) = normalize_attribute(row.attribute) else {
-        eprintln!(
-            "skip RD card {} ({}): invalid attribute {} ({:#x})",
-            row.id, name, row.attribute, row.attribute
-        );
+        diagnostics::warning(format_args!(
+            "skip RD card: id={} name={name:?} reason=unsupported attribute value={} ({:#x})",
+            row.id, row.attribute, row.attribute
+        ));
         return None;
     };
 
     if row.alias < 0 {
-        eprintln!(
-            "skip RD card {} ({}): invalid alias {}",
-            row.id, name, row.alias
-        );
+        diagnostics::warning(format_args!(
+            "skip RD card: id={} name={name:?} reason=alias must be non-negative; alias={}",
+            row.id, row.alias
+        ));
         return None;
     }
 
     let Some(card_type) = parse_card_type(row.card_type, row.race) else {
-        eprintln!(
-            "skip RD card {} ({}): invalid type {} ({:#x}) or race {} ({:#x})",
-            row.id, name, row.card_type, row.card_type, row.race, row.race
-        );
+        diagnostics::warning(format_args!(
+            "skip RD card: id={} name={name:?} reason=unsupported type or race bitmask; type={} ({:#x}) race={} ({:#x})",
+            row.id, row.card_type, row.card_type, row.race, row.race
+        ));
         return None;
     };
 
@@ -238,26 +255,20 @@ fn build_card(
     let defense = monster_value(row.defense, &card_type);
     let level = monster_value(row.level, &card_type);
     let Some(maximum) = normalize_maximum(&name, &card_type, raw_description) else {
-        eprintln!(
-            "skip RD card {} ({}): invalid maximum position for type {:?}",
-            row.id, name, card_type
-        );
+        diagnostics::warning(format_args!(
+            "skip RD card: id={} name={name:?} reason=maximum position could not be normalized for card_type={card_type:?}",
+            row.id
+        ));
         return None;
     };
     let Some(maximum_atk) = normalize_maximum_atk(maximum, raw_description) else {
-        eprintln!(
-            "skip RD card {} ({}): invalid maximum atk for maximum {:?}",
-            row.id, name, maximum
-        );
+        diagnostics::warning(format_args!(
+            "skip RD card: id={} name={name:?} reason=maximum ATK could not be parsed; maximum_position={maximum:?}",
+            row.id
+        ));
         return None;
     };
-    let Some(image) = images.resolve("RD", row.id, &name, row.alias) else {
-        eprintln!(
-            "skip RD card {} ({}): primary and alias image checks failed",
-            row.id, name
-        );
-        return None;
-    };
+    let image = images.resolve("RD", row.id, &name, row.alias)?;
 
     Some(RdCard {
         id: row.id,
