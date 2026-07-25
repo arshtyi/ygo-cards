@@ -80,6 +80,16 @@ pub struct ImageFailure {
     pub id: i64,
     pub name: String,
     pub alias: i64,
+    pub primary: FailedImageCheck,
+    pub alias_check: Option<FailedImageCheck>,
+    pub card_skipped: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FailedImageCheck {
+    pub image_id: i64,
+    pub url: String,
+    pub reason: String,
 }
 
 #[cfg(test)]

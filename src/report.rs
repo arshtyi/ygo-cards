@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use ygo_cards::cards::{ImageFailure, ImageSummary, WriteReport};
+use ygo_cards::cards::{FailedImageCheck, ImageFailure, ImageSummary, WriteReport};
 
 use crate::latest::{LatestComparisonReport, LatestComparisonStatus};
 
@@ -62,10 +62,25 @@ fn print_image_failures(failures: &[ImageFailure]) {
     println!("  image failed cards:");
     for failure in failures {
         println!(
-            "    {} id={} alias={} name={}",
-            failure.environment, failure.id, failure.alias, failure.name
+            "    {} id={} alias={} name={:?} action={}",
+            failure.environment,
+            failure.id,
+            failure.alias,
+            failure.name,
+            failed_card_action(failure.card_skipped)
         );
+        print_failed_image_check("primary", &failure.primary);
+        if let Some(alias) = &failure.alias_check {
+            print_failed_image_check("alias", alias);
+        }
     }
+}
+
+fn print_failed_image_check(role: &str, check: &FailedImageCheck) {
+    println!(
+        "      {role}: image_id={} url={} reason={}",
+        check.image_id, check.url, check.reason
+    );
 }
 
 pub(crate) fn write_summary_report(
@@ -249,18 +264,57 @@ fn append_image_failures(report: &mut String, failures: &[ImageFailure]) {
     }
 
     report.push_str("#### Failed Image Cards\n\n");
-    report.push_str("| Environment | ID | Alias | Name |\n");
-    report.push_str("| --- | ---: | ---: | --- |\n");
+    report.push_str("| Environment | Card ID | Alias | Name | Action |\n");
+    report.push_str("| --- | ---: | ---: | --- | --- |\n");
     for failure in failures {
         report.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} |\n",
             failure.environment,
             failure.id,
             failure.alias,
-            escape_markdown_cell(&failure.name)
+            escape_markdown_cell(&failure.name),
+            failed_card_action(failure.card_skipped)
         ));
     }
     report.push('\n');
+
+    report.push_str("##### Failed Image Checks\n\n");
+    report.push_str(
+        "| Environment | Card ID | Candidate | Image ID | URL | Failure reason |\n",
+    );
+    report.push_str("| --- | ---: | --- | ---: | --- | --- |\n");
+    for failure in failures {
+        append_failed_image_check(report, failure, "primary", &failure.primary);
+        if let Some(alias) = &failure.alias_check {
+            append_failed_image_check(report, failure, "alias", alias);
+        }
+    }
+    report.push('\n');
+}
+
+fn append_failed_image_check(
+    report: &mut String,
+    failure: &ImageFailure,
+    candidate: &str,
+    check: &FailedImageCheck,
+) {
+    report.push_str(&format!(
+        "| {} | {} | {} | {} | {} | {} |\n",
+        failure.environment,
+        failure.id,
+        candidate,
+        check.image_id,
+        escape_markdown_cell(&check.url),
+        escape_markdown_cell(&check.reason)
+    ));
+}
+
+fn failed_card_action(card_skipped: bool) -> &'static str {
+    if card_skipped {
+        "skipped"
+    } else {
+        "kept with image = 0"
+    }
 }
 
 fn append_latest_comparison_report(
@@ -402,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_image_failure_policy_and_skipped_count() {
+    fn reports_detailed_image_failures_and_policy() {
         let environment_report = WriteReport {
             label: "OT",
             path: PathBuf::from("output/ot.json"),
@@ -421,8 +475,19 @@ mod tests {
             image_failures: vec![ImageFailure {
                 environment: "OT",
                 id: 1,
-                name: String::from("Missing Image"),
-                alias: 0,
+                name: String::from("Missing | Image"),
+                alias: 2,
+                primary: FailedImageCheck {
+                    image_id: 1,
+                    url: String::from("https://example.test/1.jpg"),
+                    reason: String::from("HTTP 404 Not Found"),
+                },
+                alias_check: Some(FailedImageCheck {
+                    image_id: 2,
+                    url: String::from("https://example.test/2.jpg"),
+                    reason: String::from("request | timed out"),
+                }),
+                card_skipped: true,
             }],
         };
 
@@ -431,15 +496,24 @@ mod tests {
         assert!(report.contains("| On image failure | skip card |"));
         assert!(report.contains("| On failure | skip card |"));
         assert!(report.contains("| Cards skipped after image failure | 1 |"));
+        assert!(report.contains("| OT | 1 | 2 | Missing \\| Image | skipped |"));
+        assert!(report.contains(
+            "| OT | 1 | primary | 1 | https://example.test/1.jpg | HTTP 404 Not Found |"
+        ));
+        assert!(report.contains(
+            "| OT | 1 | alias | 2 | https://example.test/2.jpg | request \\| timed out |"
+        ));
 
         let mut default_report = environment_report;
         default_report.cards_written = 10;
         default_report.cards_skipped = 0;
         default_report.image_summary.skip_failures = false;
         default_report.image_summary.cards_skipped = 0;
+        default_report.image_failures[0].card_skipped = false;
         let report = build_summary_report(&[&default_report], &[]);
 
         assert!(report.contains("| On image failure | keep card with image = 0 |"));
         assert!(report.contains("| Cards skipped after image failure | 0 |"));
+        assert!(report.contains("| OT | 1 | 2 | Missing \\| Image | kept with image = 0 |"));
     }
 }

@@ -12,7 +12,7 @@ use reqwest::{
     header::{CONTENT_TYPE, RANGE},
 };
 
-use super::{ImageFailure, ImageSummary};
+use super::{FailedImageCheck, ImageFailure, ImageSummary};
 use crate::http::{backoff_delay, is_retryable_status};
 
 const MAX_IMAGE_CHECK_ATTEMPTS: u32 = 3;
@@ -20,7 +20,7 @@ const MAX_IMAGE_CHECK_ATTEMPTS: u32 = 3;
 #[derive(Debug)]
 pub(crate) struct ImageResolver {
     mode: ImageMode,
-    cache: HashMap<i64, bool>,
+    cache: HashMap<i64, ImageCheck>,
     summary: ImageSummary,
     failures: Vec<ImageFailure>,
     progress: Option<ProgressState>,
@@ -75,30 +75,40 @@ impl ImageResolver {
         }
 
         self.summary.cards_checked += 1;
-        match resolve_image(id, alias, |image_id| self.exists(image_id)) {
-            Some(image) => {
-                if image == id {
-                    self.summary.primary_found += 1;
-                } else {
-                    self.summary.alias_found += 1;
-                }
-                Some(image)
+        let primary = self.check(id);
+        if primary.is_found() {
+            self.summary.primary_found += 1;
+            return Some(id);
+        }
+
+        let primary = self.failed_check(id, primary);
+        let alias_check = if alias > 0 && alias != id {
+            let alias_result = self.check(alias);
+            if alias_result.is_found() {
+                self.summary.alias_found += 1;
+                return Some(alias);
             }
-            None => {
-                self.summary.missing += 1;
-                self.failures.push(ImageFailure {
-                    environment,
-                    id,
-                    name: name.to_string(),
-                    alias,
-                });
-                if self.summary.skip_failures {
-                    self.summary.cards_skipped += 1;
-                    None
-                } else {
-                    Some(0)
-                }
-            }
+            Some(self.failed_check(alias, alias_result))
+        } else {
+            None
+        };
+
+        self.summary.missing += 1;
+        let card_skipped = self.summary.skip_failures;
+        self.failures.push(ImageFailure {
+            environment,
+            id,
+            name: name.to_string(),
+            alias,
+            primary,
+            alias_check,
+            card_skipped,
+        });
+        if card_skipped {
+            self.summary.cards_skipped += 1;
+            None
+        } else {
+            Some(0)
         }
     }
 
@@ -158,20 +168,19 @@ impl ImageResolver {
         let _ = io::stderr().flush();
     }
 
-    fn exists(&mut self, id: i64) -> bool {
-        if let Some(exists) = self.cache.get(&id) {
+    fn check(&mut self, id: i64) -> ImageCheck {
+        if let Some(result) = self.cache.get(&id) {
             self.summary.cache_hits += 1;
-            return *exists;
+            return result.clone();
         }
 
-        let exists = match self.image_exists(id) {
+        let result = self.image_exists(id);
+        match &result {
             ImageCheck::Found => {
                 self.summary.unique_urls_found += 1;
-                true
             }
-            ImageCheck::Missing => {
+            ImageCheck::Missing(_) => {
                 self.summary.unique_urls_missing += 1;
-                false
             }
             ImageCheck::NetworkError(error) => {
                 self.summary.network_errors += 1;
@@ -181,11 +190,22 @@ impl ImageResolver {
                 } else {
                     eprintln!("image check failed for {id}: {error}");
                 }
-                false
             }
-        };
-        self.cache.insert(id, exists);
-        exists
+        }
+        self.cache.insert(id, result.clone());
+        result
+    }
+
+    fn failed_check(&self, id: i64, result: ImageCheck) -> FailedImageCheck {
+        FailedImageCheck {
+            image_id: id,
+            url: self
+                .image_url(id)
+                .expect("failed image checks only exist in checking mode"),
+            reason: result
+                .failure_reason()
+                .expect("failed image check must include a failure reason"),
+        }
     }
 
     fn image_exists(&self, id: i64) -> ImageCheck {
@@ -197,14 +217,9 @@ impl ImageResolver {
         match send_image_request_with_retries(client, Method::HEAD, &url) {
             Ok(response) if response.status() == StatusCode::METHOD_NOT_ALLOWED => {
                 self.image_exists_with_get(&url)
+                    .with_context("HEAD returned HTTP 405 Method Not Allowed; GET fallback")
             }
-            Ok(response) => {
-                if is_image_response(&response) {
-                    ImageCheck::Found
-                } else {
-                    ImageCheck::Missing
-                }
-            }
+            Ok(response) => classify_image_response(&response),
             Err(error) => ImageCheck::NetworkError(error.to_string()),
         }
     }
@@ -215,8 +230,7 @@ impl ImageResolver {
         };
 
         match send_image_request_with_retries(client, Method::GET, url) {
-            Ok(response) if is_image_response(&response) => ImageCheck::Found,
-            Ok(_) => ImageCheck::Missing,
+            Ok(response) => classify_image_response(&response),
             Err(error) => ImageCheck::NetworkError(error.to_string()),
         }
     }
@@ -264,24 +278,61 @@ enum ImageMode {
     Checking { client: Client, base_url: String },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ImageCheck {
     Found,
-    Missing,
+    Missing(String),
     NetworkError(String),
+}
+
+impl ImageCheck {
+    fn is_found(&self) -> bool {
+        matches!(self, Self::Found)
+    }
+
+    fn failure_reason(self) -> Option<String> {
+        match self {
+            Self::Found => None,
+            Self::Missing(reason) | Self::NetworkError(reason) => Some(reason),
+        }
+    }
+
+    fn with_context(self, context: &str) -> Self {
+        match self {
+            Self::Found => Self::Found,
+            Self::Missing(reason) => Self::Missing(format!("{context}: {reason}")),
+            Self::NetworkError(reason) => Self::NetworkError(format!("{context}: {reason}")),
+        }
+    }
 }
 
 fn image_url(base_url: &str, id: i64) -> String {
     format!("{}/{id}.jpg", base_url.trim_end_matches('/'))
 }
 
-fn resolve_image(id: i64, alias: i64, mut exists: impl FnMut(i64) -> bool) -> Option<i64> {
-    if exists(id) {
-        Some(id)
-    } else if alias > 0 && exists(alias) {
-        Some(alias)
+fn classify_image_response(response: &Response) -> ImageCheck {
+    if is_image_response(response) {
+        ImageCheck::Found
     } else {
-        None
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        ImageCheck::Missing(non_image_response_reason(
+            response.status(),
+            content_type,
+        ))
+    }
+}
+
+fn non_image_response_reason(status: StatusCode, content_type: Option<&str>) -> String {
+    if !status.is_success() {
+        return format!("HTTP {status}");
+    }
+
+    match content_type {
+        Some(content_type) => format!("HTTP {status}; Content-Type {content_type} is not an image"),
+        None => format!("HTTP {status}; missing or invalid Content-Type"),
     }
 }
 
@@ -302,7 +353,11 @@ fn send_image_request_with_retries(client: &Client, method: Method, url: &str) -
             }
             Ok(response) => return Ok(response),
             Err(error) => {
-                return Err(error).with_context(|| format!("failed to check image {}", url));
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to check image {url} after {MAX_IMAGE_CHECK_ATTEMPTS} attempts"
+                    )
+                });
             }
         }
     }
@@ -332,35 +387,74 @@ mod tests {
     }
 
     #[test]
-    fn resolves_image_id_with_alias_fallback() {
-        assert_eq!(resolve_image(100, 200, |id| id == 100), Some(100));
-        assert_eq!(resolve_image(100, 200, |id| id == 200), Some(200));
-        assert_eq!(resolve_image(100, 0, |_| false), None);
-        assert_eq!(resolve_image(100, 200, |_| false), None);
+    fn describes_non_image_responses() {
+        assert_eq!(
+            non_image_response_reason(StatusCode::NOT_FOUND, Some("text/html")),
+            "HTTP 404 Not Found"
+        );
+        assert_eq!(
+            non_image_response_reason(StatusCode::OK, Some("text/html")),
+            "HTTP 200 OK; Content-Type text/html is not an image"
+        );
+        assert_eq!(
+            non_image_response_reason(StatusCode::OK, None),
+            "HTTP 200 OK; missing or invalid Content-Type"
+        );
     }
 
     #[test]
     fn keeps_cards_with_failed_images_by_default() {
         let mut resolver = ImageResolver::new(true, false).unwrap();
-        resolver.cache.insert(100, false);
-        resolver.cache.insert(200, false);
+        resolver
+            .cache
+            .insert(100, ImageCheck::Missing(String::from("HTTP 404 Not Found")));
+        resolver.cache.insert(
+            200,
+            ImageCheck::NetworkError(String::from("request timed out")),
+        );
 
         assert_eq!(resolver.resolve("OT", 100, "Card", 200), Some(0));
         assert_eq!(resolver.summary().missing, 1);
         assert_eq!(resolver.summary().cards_skipped, 0);
-        assert_eq!(resolver.failures().len(), 1);
+        let failure = &resolver.failures()[0];
+        assert_eq!(failure.id, 100);
+        assert_eq!(failure.alias, 200);
+        assert_eq!(failure.primary.image_id, 100);
+        assert_eq!(failure.primary.reason, "HTTP 404 Not Found");
+        assert_eq!(
+            failure.alias_check.as_ref().unwrap().reason,
+            "request timed out"
+        );
+        assert!(!failure.card_skipped);
     }
 
     #[test]
     fn skips_cards_with_failed_images_when_enabled() {
         let mut resolver = ImageResolver::new(true, true).unwrap();
-        resolver.cache.insert(100, false);
-        resolver.cache.insert(200, false);
+        resolver
+            .cache
+            .insert(100, ImageCheck::Missing(String::from("HTTP 404 Not Found")));
+        resolver
+            .cache
+            .insert(200, ImageCheck::Missing(String::from("HTTP 404 Not Found")));
 
         assert_eq!(resolver.resolve("OT", 100, "Card", 200), None);
         assert_eq!(resolver.summary().missing, 1);
         assert_eq!(resolver.summary().cards_skipped, 1);
-        assert_eq!(resolver.failures().len(), 1);
+        assert!(resolver.failures()[0].card_skipped);
+    }
+
+    #[test]
+    fn uses_an_available_alias_after_a_primary_failure() {
+        let mut resolver = ImageResolver::new(true, true).unwrap();
+        resolver
+            .cache
+            .insert(100, ImageCheck::Missing(String::from("HTTP 404 Not Found")));
+        resolver.cache.insert(200, ImageCheck::Found);
+
+        assert_eq!(resolver.resolve("OT", 100, "Card", 200), Some(200));
+        assert_eq!(resolver.summary().alias_found, 1);
+        assert!(resolver.failures().is_empty());
     }
 
     #[test]
