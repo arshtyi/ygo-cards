@@ -151,6 +151,10 @@ mod tests {
             parse_card_type(0x8021, 0x40000000),
             some_labels(&["怪兽", "银河族", "极大", "效果"])
         );
+        assert_eq!(
+            parse_card_type(0x421, 0x1),
+            some_labels(&["怪兽", "战士族", "同盟", "效果"])
+        );
     }
 
     #[test]
