@@ -3,7 +3,7 @@ use std::{path::Path, process::ExitCode};
 use anyhow::Result;
 use clap::error::ErrorKind;
 use ygo_cards::{
-    cards::BuildOptions,
+    cards::{BuildOptions, LfStatisticsOptions},
     diagnostics::{self, BUILD_LOG_PATH},
 };
 
@@ -72,10 +72,15 @@ fn generate(options: Options) -> Result<()> {
         check_images: options.check_images,
         skip_image_failures: options.skip_image_failures,
     };
-    let ot_report = ygo_cards::cards::ot::write_json(build_options)?;
+    let lf_statistics_options = LfStatisticsOptions {
+        ignore_aliases: !options.include_aliases_in_lf_statistics,
+    };
+    let ot_report =
+        ygo_cards::cards::ot::write_json_with_lf_statistics(build_options, lf_statistics_options)?;
     print_write_report(&ot_report);
 
-    let rd_report = ygo_cards::cards::rd::write_json(build_options)?;
+    let rd_report =
+        ygo_cards::cards::rd::write_json_with_lf_statistics(build_options, lf_statistics_options)?;
     print_write_report(&rd_report);
 
     let reports = [&ot_report, &rd_report];

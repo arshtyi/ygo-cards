@@ -9,8 +9,8 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use super::{
-    BuildOptions, LfSummary, WriteReport, images::ImageResolver, masks::ensure_ot_masks, rejection,
-    write_cards,
+    BuildOptions, LfStatisticsOptions, LfSummary, WriteReport, images::ImageResolver,
+    masks::ensure_ot_masks, rejection, write_cards,
 };
 
 use self::{
@@ -73,6 +73,13 @@ struct CardRow {
 }
 
 pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
+    write_json_with_lf_statistics(options, LfStatisticsOptions::default())
+}
+
+pub fn write_json_with_lf_statistics(
+    options: BuildOptions,
+    lf_statistics_options: LfStatisticsOptions,
+) -> Result<WriteReport> {
     ensure_ot_masks()?;
     let lf_lists = read_lf_lists(Path::new(LFLIST))?;
     let mut images = ImageResolver::new(options)?;
@@ -86,7 +93,8 @@ pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
         path,
         cards_written: read_report.cards.len(),
         cards_skipped: read_report.cards_skipped,
-        lf_summaries: summarize_lf(&read_report.cards),
+        lf_statistics_options,
+        lf_summaries: summarize_lf(&read_report.cards, lf_statistics_options),
         image_summary: images.summary(),
         image_failures: images.failures().to_vec(),
     })
@@ -307,11 +315,14 @@ fn build_card(
     })
 }
 
-fn summarize_lf(cards: &[OtCard]) -> Vec<LfSummary> {
+fn summarize_lf(cards: &[OtCard], options: LfStatisticsOptions) -> Vec<LfSummary> {
     let mut ocg = [0; 4];
     let mut tcg = [0; 4];
 
-    for card in cards.iter().filter(|card| card.alias == 0) {
+    for card in cards
+        .iter()
+        .filter(|card| !options.ignore_aliases || card.alias == 0)
+    {
         if let Some(limit) = card
             .lf
             .first()
@@ -381,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn summarizes_limits_for_original_cards_only() {
+    fn summarizes_limits_with_alias_filtering() {
         let card = |alias, lf| OtCard {
             id: 1,
             name: String::new(),
@@ -400,13 +411,24 @@ mod tests {
             link_value: None,
             link_marker: None,
         };
-        let summaries = summarize_lf(&[
+        let cards = [
             card(0, vec![0, 1]),
             card(123, vec![0, 1]),
             card(0, vec![2, 3]),
-        ]);
+        ];
+        let summaries = summarize_lf(&cards, LfStatisticsOptions::default());
 
         assert_eq!(summaries[0].counts, [1, 0, 1, 0]);
         assert_eq!(summaries[1].counts, [0, 1, 0, 1]);
+
+        let summaries = summarize_lf(
+            &cards,
+            LfStatisticsOptions {
+                ignore_aliases: false,
+            },
+        );
+
+        assert_eq!(summaries[0].counts, [2, 0, 1, 0]);
+        assert_eq!(summaries[1].counts, [0, 2, 0, 1]);
     }
 }

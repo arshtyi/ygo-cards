@@ -17,6 +17,10 @@ pub(crate) struct Options {
     /// Skip cards whose primary and alias images both fail (requires --check-images)
     #[arg(long, requires = "check_images")]
     pub(crate) skip_image_failures: bool,
+
+    /// Include cards with alias != 0 in forbidden-list statistics
+    #[arg(long)]
+    pub(crate) include_aliases_in_lf_statistics: bool,
 }
 
 impl Options {
@@ -45,12 +49,14 @@ mod tests {
                 "--refresh-resources",
                 "--check-images",
                 "--skip-image-failures",
+                "--include-aliases-in-lf-statistics",
             ])
             .unwrap(),
             Options {
                 refresh_resources: true,
                 check_images: true,
                 skip_image_failures: true,
+                include_aliases_in_lf_statistics: true,
             }
         );
     }
@@ -72,6 +78,7 @@ mod tests {
         assert!(help.contains("--refresh-resources"));
         assert!(help.contains("--check-images"));
         assert!(help.contains("--skip-image-failures"));
+        assert!(help.contains("--include-aliases-in-lf-statistics"));
     }
 
     #[test]

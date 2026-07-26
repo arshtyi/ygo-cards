@@ -83,6 +83,17 @@ fn append_environment_report(report: &mut String, environment_report: &WriteRepo
     ));
 
     report.push_str("### Forbidden Lists\n\n");
+    report.push_str(&format!(
+        "Alias cards (`alias != 0`): **{}**.\n\n",
+        if environment_report
+            .lf_statistics_options
+            .ignore_aliases
+        {
+            "ignored"
+        } else {
+            "included"
+        }
+    ));
     report.push_str("| List | Forbidden | Limit | Semi | Unlimited |\n");
     report.push_str("| --- | ---: | ---: | ---: | ---: |\n");
     for summary in &environment_report.lf_summaries {
@@ -351,6 +362,7 @@ mod tests {
             path: PathBuf::from("output/ot.json"),
             cards_written: 9,
             cards_skipped: 1,
+            lf_statistics_options: Default::default(),
             lf_summaries: Vec::new(),
             image_summary: ImageSummary {
                 enabled: true,
@@ -386,6 +398,7 @@ mod tests {
         assert!(report.contains("| On failure | skip card |"));
         assert!(report.contains("| Cards skipped after image failure | 1 |"));
         assert!(report.contains("| Build log | `output/build.log` |"));
+        assert!(report.contains("Alias cards (`alias != 0`): **ignored**."));
         assert!(report.contains("<summary>Image statistics</summary>"));
         assert!(report.contains("<summary>Detailed image totals</summary>"));
         assert!(report.contains("<summary>Failed image cards (1)</summary>"));
@@ -411,5 +424,10 @@ mod tests {
         assert!(report.contains("| On image failure | keep card with image = 0 |"));
         assert!(report.contains("| Cards skipped after image failure | 0 |"));
         assert!(report.contains("| OT | 1 | 2 | Missing \\| Image | kept with image = 0 |"));
+
+        default_report.lf_statistics_options.ignore_aliases = false;
+        let report = build_summary_report(&[&default_report], &[]);
+
+        assert!(report.contains("Alias cards (`alias != 0`): **included**."));
     }
 }

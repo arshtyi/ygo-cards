@@ -11,6 +11,14 @@ pub(crate) fn print_write_report(report: &WriteReport) {
         report.cards_skipped,
         report.path.display()
     );
+    println!(
+        "  forbidden-list statistics: aliases={}",
+        if report.lf_statistics_options.ignore_aliases {
+            "ignored"
+        } else {
+            "included"
+        }
+    );
 
     for summary in &report.lf_summaries {
         println!(

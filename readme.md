@@ -19,11 +19,18 @@ Generate normalized Yu-Gi-Oh! card data for OT and RD environments
 Usage: ygo-cards [OPTIONS]
 
 Options:
-      --refresh-resources    Download fresh upstream resources before generating card data
-      --check-images         Check primary and alias images; failed checks use image 0 by default
-      --skip-image-failures  Skip cards whose primary and alias images both fail (requires --check-images)
-  -h, --help                 Print help
-  -V, --version              Print version
+      --refresh-resources
+          Download fresh upstream resources before generating card data
+      --check-images
+          Check primary and alias images; failed checks use image 0 by default
+      --skip-image-failures
+          Skip cards whose primary and alias images both fail (requires --check-images)
+      --include-aliases-in-lf-statistics
+          Include cards with alias != 0 in forbidden-list statistics
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 
 ## Field Definitions
