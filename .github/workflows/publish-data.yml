@@ -45,7 +45,7 @@ jobs:
             cat output/report.md
             printf '\n<details>\n'
             printf '<summary>Build log</summary>\n\n'
-            printf '````console\n'
+            printf '````log\n'
             cat output/build.log
             printf '````\n\n'
             printf '</details>\n'

@@ -99,10 +99,11 @@ fn append_environment_report(report: &mut String, environment_report: &WriteRepo
 
     if environment_report.image_summary.enabled {
         report.push_str("### Images\n\n");
+        begin_collapsed(report, "Image statistics");
         report.push_str("| Metric | Value |\n");
         report.push_str("| --- | ---: |\n");
         report.push_str(&format!(
-            "| Successful cards | {} |\n| Failed cards | {} |\n| On failure | {} |\n| Cards skipped after image failure | {} |\n| Primary hits | {} |\n| Alias hits | {} |\n| Checked cards | {} |\n| Unique URLs found | {} |\n| Unique URLs missing | {} |\n| Cache hits | {} |\n| Network errors | {} |\n\n",
+            "| Successful cards | {} |\n| Failed cards | {} |\n| On failure | {} |\n| Cards skipped after image failure | {} |\n| Primary hits | {} |\n| Alias hits | {} |\n| Checked cards | {} |\n| Unique URLs found | {} |\n| Unique URLs missing | {} |\n| Cache hits | {} |\n| Network errors | {} |\n",
             environment_report.image_summary.successful_cards(),
             environment_report.image_failures.len(),
             image_failure_action(environment_report.image_summary),
@@ -115,12 +116,14 @@ fn append_environment_report(report: &mut String, environment_report: &WriteRepo
             environment_report.image_summary.cache_hits,
             environment_report.image_summary.network_errors,
         ));
+        end_collapsed(report);
         append_image_failures(report, &environment_report.image_failures);
     }
 }
 
 fn append_image_totals(report: &mut String, totals: &ReportTotals) {
     report.push_str("## Image Totals\n\n");
+    begin_collapsed(report, "Detailed image totals");
     report.push_str("| Metric | Value |\n");
     report.push_str("| --- | ---: |\n");
     report.push_str(&format!(
@@ -137,6 +140,7 @@ fn append_image_totals(report: &mut String, totals: &ReportTotals) {
         totals.images.cache_hits,
         totals.images.network_errors
     ));
+    end_collapsed(report);
 }
 
 fn append_image_failures(report: &mut String, failures: &[ImageFailure]) {
@@ -144,7 +148,8 @@ fn append_image_failures(report: &mut String, failures: &[ImageFailure]) {
         return;
     }
 
-    report.push_str("#### Failed Image Cards\n\n");
+    report.push_str("#### Image Failures\n\n");
+    begin_collapsed(report, &format!("Failed image cards ({})", failures.len()));
     report.push_str("| Environment | Card ID | Alias | Name | Action |\n");
     report.push_str("| --- | ---: | ---: | --- | --- |\n");
     for failure in failures {
@@ -157,9 +162,16 @@ fn append_image_failures(report: &mut String, failures: &[ImageFailure]) {
             failed_card_action(failure.card_skipped)
         ));
     }
-    report.push('\n');
+    end_collapsed(report);
 
-    report.push_str("##### Failed Image Checks\n\n");
+    let failed_checks = failures
+        .iter()
+        .map(|failure| 1 + usize::from(failure.alias_check.is_some()))
+        .sum::<usize>();
+    begin_collapsed(
+        report,
+        &format!("Failed image candidate checks ({failed_checks})"),
+    );
     report.push_str(
         "| Environment | Card ID | Candidate | Image ID | URL | Failure reason |\n",
     );
@@ -170,7 +182,7 @@ fn append_image_failures(report: &mut String, failures: &[ImageFailure]) {
             append_failed_image_check(report, failure, "alias", alias);
         }
     }
-    report.push('\n');
+    end_collapsed(report);
 }
 
 fn append_failed_image_check(
@@ -228,6 +240,10 @@ fn append_latest_comparison_report(
                 if comparison.added_cards.is_empty() {
                     report.push_str("No new cards.\n\n");
                 } else {
+                    begin_collapsed(
+                        report,
+                        &format!("New card details ({})", comparison.added_cards.len()),
+                    );
                     report.push_str("| ID | Name | Type |\n");
                     report.push_str("| ---: | --- | --- |\n");
                     for card in &comparison.added_cards {
@@ -238,7 +254,7 @@ fn append_latest_comparison_report(
                             escape_markdown_cell(&card_type_display(&card.card_type))
                         ));
                     }
-                    report.push('\n');
+                    end_collapsed(report);
                 }
             }
             LatestComparisonStatus::NotFound => {
@@ -252,6 +268,15 @@ fn append_latest_comparison_report(
             }
         }
     }
+}
+
+fn begin_collapsed(report: &mut String, summary: &str) {
+    report.push_str("<details>\n");
+    report.push_str(&format!("<summary>{summary}</summary>\n\n"));
+}
+
+fn end_collapsed(report: &mut String) {
+    report.push_str("\n</details>\n\n");
 }
 
 fn escape_markdown_cell(text: &str) -> String {
@@ -313,7 +338,10 @@ mod tests {
 
         assert!(report.contains("## New Cards Since Latest Release"));
         assert!(report.contains("| New cards | 1 |"));
+        assert!(report.contains("<summary>New card details (1)</summary>"));
         assert!(report.contains("| 2 | New\\|Card | 怪兽/龙族/通常 |"));
+        assert_eq!(report.matches("<details>").count(), 1);
+        assert_eq!(report.matches("</details>").count(), 1);
     }
 
     #[test]
@@ -358,6 +386,10 @@ mod tests {
         assert!(report.contains("| On failure | skip card |"));
         assert!(report.contains("| Cards skipped after image failure | 1 |"));
         assert!(report.contains("| Build log | `output/build.log` |"));
+        assert!(report.contains("<summary>Image statistics</summary>"));
+        assert!(report.contains("<summary>Detailed image totals</summary>"));
+        assert!(report.contains("<summary>Failed image cards (1)</summary>"));
+        assert!(report.contains("<summary>Failed image candidate checks (2)</summary>"));
         assert!(report.contains("| OT | 1 | 2 | Missing \\| Image | skipped |"));
         assert!(report.contains(
             "| OT | 1 | primary | 1 | https://example.test/1.jpg | HTTP 404 Not Found |"
@@ -365,6 +397,8 @@ mod tests {
         assert!(report.contains(
             "| OT | 1 | alias | 2 | https://example.test/2.jpg | request \\| timed out |"
         ));
+        assert_eq!(report.matches("<details>").count(), 4);
+        assert_eq!(report.matches("</details>").count(), 4);
 
         let mut default_report = environment_report;
         default_report.cards_written = 10;
