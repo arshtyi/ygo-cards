@@ -6,8 +6,8 @@
     "rdForbiddenList": "https://code.moenext.com/mycard/ygopro-rush-duel/-/raw/master/lflist.conf"
   },
   "latestJson": {
-    "ot": "https://github.com/arshtyi/ygo-cards/releases/download/latest/ot.json",
-    "rd": "https://github.com/arshtyi/ygo-cards/releases/download/latest/rd.json"
+    "ot": "https://github.com/arshtyi/ygo-cards/releases/latest/download/ot.json",
+    "rd": "https://github.com/arshtyi/ygo-cards/releases/latest/download/rd.json"
   },
   "imageBaseUrl": "https://images.ygoprodeck.com/images/cards_cropped"
 }

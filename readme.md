@@ -40,3 +40,7 @@ Canonical data-field definitions are maintained in [arshtyi/ygo-definitions](htt
 Bitmask mappings for attributes, types, races, link markers, and RD maximum markers are maintained in `config/ot-masks.json` and `config/rd-masks.json`.
 
 Remote resource, latest-release, and image URLs are maintained in `config/urls.json`.
+
+## Releases
+
+The scheduled workflow compares the generated `ot.json` and `rd.json` with the current latest release. It skips publication when both datasets are unchanged; otherwise, it publishes the next `0.0.N` version (starting at `0.0.1`) and marks that release as latest.

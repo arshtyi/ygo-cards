@@ -39,7 +39,87 @@ jobs:
           test -s output/report.md
           test -s output/build.log
 
+      - name: Compare data and select release version
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          release_error="$RUNNER_TEMP/latest-release-error"
+          if latest_tag="$(
+            gh release view \
+              --repo "$GITHUB_REPOSITORY" \
+              --json tagName \
+              --jq .tagName \
+              2>"$release_error"
+          )"; then
+            previous_dir="$RUNNER_TEMP/previous-release"
+            mkdir -p "$previous_dir"
+            gh release download "$latest_tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --dir "$previous_dir" \
+              --pattern "ot.json" \
+              --pattern "rd.json"
+
+            unchanged=true
+            for dataset in ot rd; do
+              test -s "$previous_dir/$dataset.json"
+              jq --compact-output --sort-keys . "output/$dataset.json" \
+                > "$previous_dir/current-$dataset.json"
+              jq --compact-output --sort-keys . "$previous_dir/$dataset.json" \
+                > "$previous_dir/released-$dataset.json"
+              if ! cmp -s \
+                "$previous_dir/current-$dataset.json" \
+                "$previous_dir/released-$dataset.json"; then
+                unchanged=false
+              fi
+            done
+
+            if [[ "$unchanged" == true ]]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "Generated card data matches release $latest_tag; publication skipped." \
+                >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          else
+            release_count="$(
+              gh release list \
+                --repo "$GITHUB_REPOSITORY" \
+                --limit 1 \
+                --exclude-drafts \
+                --exclude-pre-releases \
+                --json tagName \
+                --jq length
+            )"
+            if [[ "$release_count" != "0" ]]; then
+              cat "$release_error" >&2
+              exit 1
+            fi
+          fi
+
+          next_patch="$(
+            gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[].tag_name' |
+              awk -F. '
+                NF == 3 && $1 == "0" && $2 == "0" && $3 ~ /^[1-9][0-9]*$/ {
+                  patch = $3 + 0
+                  if (patch > max) max = patch
+                }
+                END { print max + 1 }
+              '
+          )"
+          tag="0.0.$next_patch"
+
+          {
+            echo "changed=true"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "Card data changed; preparing release $tag." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Prepare release notes
+        if: steps.release.outputs.changed == 'true'
         run: |
           {
             cat output/report.md
@@ -52,23 +132,21 @@ jobs:
           } > output/release-notes.md
           test -s output/release-notes.md
 
-      - name: Publish latest release
+      - name: Publish release
+        if: steps.release.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: latest
-          TITLE: Latest card data
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
 
-          git tag -f "$TAG" "$GITHUB_SHA"
-          git push origin "refs/tags/$TAG" --force
-
-          gh release delete "$TAG" --yes || true
           gh release create "$TAG" \
             output/ot.json \
             output/rd.json \
             output/report.md \
             output/build.log \
-            --title "$TITLE" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
             --notes-file output/release-notes.md \
             --latest
