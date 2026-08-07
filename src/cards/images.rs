@@ -14,7 +14,7 @@ use reqwest::{
 
 use super::{BuildOptions, FailedImageCheck, ImageFailure, ImageSummary};
 use crate::{
-    diagnostics,
+    diagnostics::{self, Diagnostic},
     http::{backoff_delay, is_retryable_status},
 };
 
@@ -98,17 +98,22 @@ impl ImageResolver {
 
         self.summary.missing += 1;
         let card_skipped = self.summary.skip_failures;
-        diagnostics::warning(format_args!(
-            "card image resolution failed: environment={} card_id={} alias={} name={name:?} action={} reason=no primary or distinct alias image candidate passed validation",
-            environment,
-            id,
-            alias,
-            if card_skipped {
-                "skipped"
-            } else {
-                "kept with image=0"
-            }
-        ));
+        diagnostics::record(
+            Diagnostic::warning("image.unresolved", "Card image could not be resolved")
+                .context("Environment", environment)
+                .context("Card ID", id)
+                .context("Alias", alias)
+                .context("Name", name)
+                .context(
+                    "Action",
+                    if card_skipped {
+                        "card skipped"
+                    } else {
+                        "card kept with image 0"
+                    },
+                )
+                .reason("No primary or distinct alias image candidate passed validation"),
+        );
         self.failures.push(ImageFailure {
             environment,
             id,
@@ -203,15 +208,24 @@ impl ImageResolver {
         }
         if let Some((kind, reason)) = result.failure_details() {
             let url = self.image_url(id).unwrap_or_else(|| {
-                diagnostics::error(format_args!(
-                    "internal image diagnostic error: image_id={id} reason=checking mode has no image URL"
-                ));
+                diagnostics::record(
+                    Diagnostic::error(
+                        "internal.image-state",
+                        "Image checker entered an inconsistent state",
+                    )
+                    .context("Image ID", id)
+                    .reason("Checking mode has no image URL")
+                    .suggestion("Report this as an internal ygo-cards bug"),
+                );
                 format!("{id}.jpg")
             });
-            diagnostics::warning(format_args!(
-                "image candidate check failed: image_id={} url={} kind={} reason={reason}",
-                id, url, kind
-            ));
+            diagnostics::record(
+                Diagnostic::warning("image.candidate-failed", "Image candidate check failed")
+                    .context("Image ID", id)
+                    .context("Kind", kind)
+                    .context("URL", url)
+                    .reason(reason),
+            );
         }
         self.cache.insert(id, result.clone());
         result
@@ -219,15 +233,27 @@ impl ImageResolver {
 
     fn failed_check(&self, id: i64, result: ImageCheck) -> FailedImageCheck {
         let url = self.image_url(id).unwrap_or_else(|| {
-            diagnostics::error(format_args!(
-                "internal image diagnostic error: image_id={id} reason=failed check has no image URL"
-            ));
+            diagnostics::record(
+                Diagnostic::error(
+                    "internal.image-state",
+                    "Image checker entered an inconsistent state",
+                )
+                .context("Image ID", id)
+                .reason("A failed check has no image URL")
+                .suggestion("Report this as an internal ygo-cards bug"),
+            );
             format!("{id}.jpg")
         });
         let reason = result.failure_reason().unwrap_or_else(|| {
-            diagnostics::error(format_args!(
-                "internal image diagnostic error: image_id={id} reason=successful result was recorded as a failed check"
-            ));
+            diagnostics::record(
+                Diagnostic::error(
+                    "internal.image-state",
+                    "Image checker entered an inconsistent state",
+                )
+                .context("Image ID", id)
+                .reason("A successful result was recorded as a failed check")
+                .suggestion("Report this as an internal ygo-cards bug"),
+            );
             String::from("internal error: missing failure reason")
         });
 
@@ -245,12 +271,11 @@ impl ImageResolver {
 
         let url = image_url(base_url, id);
         match send_image_request_with_retries(client, Method::HEAD, &url) {
-            Ok(response) if response.status() == StatusCode::METHOD_NOT_ALLOWED => {
-                self.image_exists_with_get(&url)
-                    .with_context("HEAD returned HTTP 405 Method Not Allowed; GET fallback")
-            }
+            Ok(response) if response.status() == StatusCode::METHOD_NOT_ALLOWED => self
+                .image_exists_with_get(&url)
+                .with_context("HEAD returned HTTP 405 Method Not Allowed; GET fallback"),
             Ok(response) => classify_image_response(&response),
-            Err(error) => ImageCheck::NetworkError(error.to_string()),
+            Err(error) => ImageCheck::NetworkError(format!("{error:#}")),
         }
     }
 
@@ -261,7 +286,7 @@ impl ImageResolver {
 
         match send_image_request_with_retries(client, Method::GET, url) {
             Ok(response) => classify_image_response(&response),
-            Err(error) => ImageCheck::NetworkError(error.to_string()),
+            Err(error) => ImageCheck::NetworkError(format!("{error:#}")),
         }
     }
 
@@ -356,10 +381,7 @@ fn classify_image_response(response: &Response) -> ImageCheck {
             .headers()
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok());
-        ImageCheck::Missing(non_image_response_reason(
-            response.status(),
-            content_type,
-        ))
+        ImageCheck::Missing(non_image_response_reason(response.status(), content_type))
     }
 }
 
@@ -388,27 +410,32 @@ fn send_image_request_with_retries(client: &Client, method: Method, url: &str) -
             Ok(response) if attempt == MAX_IMAGE_CHECK_ATTEMPTS => return Ok(response),
             Ok(response) => {
                 let delay = backoff_delay(attempt);
-                diagnostics::warning(format_args!(
-                    "image request will be retried: method={} url={} attempt={}/{} status=\"HTTP {}\" retry_in={}s",
-                    method,
-                    url,
-                    attempt,
-                    MAX_IMAGE_CHECK_ATTEMPTS,
-                    response.status(),
-                    delay.as_secs()
-                ));
+                diagnostics::record(
+                    Diagnostic::warning("image.request-retry", "Image request will be retried")
+                        .context("Method", &method)
+                        .context("URL", url)
+                        .context(
+                            "Attempt",
+                            format!("{attempt} of {MAX_IMAGE_CHECK_ATTEMPTS}"),
+                        )
+                        .context("Retry in", format!("{} seconds", delay.as_secs()))
+                        .reason(format!("HTTP {}", response.status())),
+                );
                 thread::sleep(delay);
             }
             Err(error) if attempt < MAX_IMAGE_CHECK_ATTEMPTS => {
                 let delay = backoff_delay(attempt);
-                diagnostics::warning(format_args!(
-                    "image request will be retried: method={} url={} attempt={}/{} reason={error}; retry_in={}s",
-                    method,
-                    url,
-                    attempt,
-                    MAX_IMAGE_CHECK_ATTEMPTS,
-                    delay.as_secs()
-                ));
+                diagnostics::record(
+                    Diagnostic::warning("image.request-retry", "Image request will be retried")
+                        .context("Method", &method)
+                        .context("URL", url)
+                        .context(
+                            "Attempt",
+                            format!("{attempt} of {MAX_IMAGE_CHECK_ATTEMPTS}"),
+                        )
+                        .context("Retry in", format!("{} seconds", delay.as_secs()))
+                        .reason(format!("{:#}", anyhow::Error::new(error))),
+                );
                 thread::sleep(delay);
             }
             Err(error) => {

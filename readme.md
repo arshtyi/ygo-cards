@@ -8,8 +8,10 @@ The tool downloads upstream YGOPro-compatible resources, normalizes card records
 
 - `output/ot.json`: normalized OT card data.
 - `output/rd.json`: normalized RD card data.
-- `output/report.md`: build summary, forbidden-list counts, skipped-card counts, image-check results when enabled, and new cards compared with the current `latest` release when available.
-- `output/build.log`: warnings and errors with retry, resource, card, image, and latest-release context; normal runs keep error details out of the console.
+- `output/report.md`: release-ready Markdown with an at-a-glance dataset summary, new cards since the current `latest` release, image validation, forbidden-list statistics, and grouped build diagnostics.
+- `output/build.log`: numbered, structured warning and error records with aligned context, reasons, suggestions, and final severity totals.
+
+Normal progress and dataset summaries are written to stdout. Fatal failures are written to stderr with their complete error chain and the diagnostics path.
 
 ## Usage
 
@@ -43,4 +45,4 @@ Remote resource, latest-release, and image URLs are maintained in `config/urls.j
 
 ## Releases
 
-The scheduled workflow compares the generated `ot.json` and `rd.json` with the current latest release. It skips publication when both datasets are unchanged; otherwise, it publishes the next `0.0.N` version (starting at `0.0.1`) and marks that release as latest.
+The scheduled workflow compares the generated `ot.json` and `rd.json` with the current latest release. It skips publication when both datasets are unchanged; otherwise, it publishes the next `0.0.N` version (starting at `0.0.1`) and marks that release as latest. The release body uses `output/report.md` directly, with release and commit metadata added by the workflow; diagnostics are already grouped and formatted in the report instead of being appended as a duplicate raw log.

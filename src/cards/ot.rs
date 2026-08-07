@@ -170,11 +170,7 @@ fn read_cards(
     })
 }
 
-fn build_card(
-    row: CardRow,
-    lf_lists: &LfLists,
-    images: &mut ImageResolver,
-) -> Option<OtCard> {
+fn build_card(row: CardRow, lf_lists: &LfLists, images: &mut ImageResolver) -> Option<OtCard> {
     if row.id <= 0 {
         rejection::card(
             "OT",
@@ -327,19 +323,17 @@ fn summarize_lf(cards: &[OtCard], options: LfStatisticsOptions) -> Vec<LfSummary
             .lf
             .first()
             .and_then(|limit| usize::try_from(*limit).ok())
+            && let Some(count) = ocg.get_mut(limit)
         {
-            if let Some(count) = ocg.get_mut(limit) {
-                *count += 1;
-            }
+            *count += 1;
         }
         if let Some(limit) = card
             .lf
             .get(1)
             .and_then(|limit| usize::try_from(*limit).ok())
+            && let Some(count) = tcg.get_mut(limit)
         {
-            if let Some(count) = tcg.get_mut(limit) {
-                *count += 1;
-            }
+            *count += 1;
         }
     }
 

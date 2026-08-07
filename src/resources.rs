@@ -14,7 +14,7 @@ use reqwest::{
 };
 
 use crate::{
-    diagnostics,
+    diagnostics::{self, Diagnostic},
     http::{backoff_delay, is_retryable_status},
     urls::{self, ResourceUrlKey, UrlConfig},
 };
@@ -130,10 +130,15 @@ fn download_resource(client: &Client, resource: &Resource<'_>) -> Result<Downloa
 
     for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
         if let Err(error) = remove_file_if_exists(&temp_path) {
-            diagnostics::warning(format_args!(
-                "failed to remove stale temporary asset: path={} reason={error}; continuing",
-                temp_path.display()
-            ));
+            diagnostics::record(
+                Diagnostic::warning(
+                    "resource.cleanup-failed",
+                    "Stale temporary resource could not be removed",
+                )
+                .context("Path", temp_path.display())
+                .reason(error)
+                .suggestion("The download will continue and may replace the file later"),
+            );
         }
         match download_resource_once(client, resource, &path, &temp_path) {
             Ok(bytes) => {
@@ -145,15 +150,19 @@ fn download_resource(client: &Client, resource: &Resource<'_>) -> Result<Downloa
             }
             Err(error) if attempt < MAX_DOWNLOAD_ATTEMPTS => {
                 let delay = backoff_delay(attempt);
-                diagnostics::warning(format_args!(
-                    "resource download attempt failed: resource={:?} url={} destination={} attempt={}/{} reason={error:#}; retry_in={}s",
-                    resource.name,
-                    resource.url,
-                    path.display(),
-                    attempt,
-                    MAX_DOWNLOAD_ATTEMPTS,
-                    delay.as_secs()
-                ));
+                diagnostics::record(
+                    Diagnostic::warning(
+                        "resource.download-retry",
+                        "Resource download attempt failed",
+                    )
+                    .context("Resource", resource.name)
+                    .context("URL", resource.url)
+                    .context("Destination", path.display())
+                    .context("Attempt", format!("{attempt} of {MAX_DOWNLOAD_ATTEMPTS}"))
+                    .context("Retry in", format!("{} seconds", delay.as_secs()))
+                    .reason(format!("{error:#}"))
+                    .suggestion("The download will be retried automatically"),
+                );
                 last_error = Some(error);
                 thread::sleep(delay);
             }
@@ -213,15 +222,17 @@ fn send_with_retries(client: &Client, resource: &Resource<'_>) -> Result<Respons
                 }
 
                 let delay = retry_delay(&response, attempt);
-                diagnostics::warning(format_args!(
-                    "resource request will be retried: resource={:?} url={} attempt={}/{} status=\"HTTP {}\" retry_in={}s",
-                    resource.name,
-                    resource.url,
-                    attempt,
-                    MAX_DOWNLOAD_ATTEMPTS,
-                    status,
-                    delay.as_secs()
-                ));
+                diagnostics::record(
+                    Diagnostic::warning(
+                        "resource.request-retry",
+                        "Resource request will be retried",
+                    )
+                    .context("Resource", resource.name)
+                    .context("URL", resource.url)
+                    .context("Attempt", format!("{attempt} of {MAX_DOWNLOAD_ATTEMPTS}"))
+                    .context("Retry in", format!("{} seconds", delay.as_secs()))
+                    .reason(format!("HTTP {status}")),
+                );
                 thread::sleep(delay);
             }
             Err(error) => {
@@ -235,14 +246,17 @@ fn send_with_retries(client: &Client, resource: &Resource<'_>) -> Result<Respons
                 }
 
                 let delay = backoff_delay(attempt);
-                diagnostics::warning(format_args!(
-                    "resource request will be retried: resource={:?} url={} attempt={}/{} reason={error}; retry_in={}s",
-                    resource.name,
-                    resource.url,
-                    attempt,
-                    MAX_DOWNLOAD_ATTEMPTS,
-                    delay.as_secs()
-                ));
+                diagnostics::record(
+                    Diagnostic::warning(
+                        "resource.request-retry",
+                        "Resource request will be retried",
+                    )
+                    .context("Resource", resource.name)
+                    .context("URL", resource.url)
+                    .context("Attempt", format!("{attempt} of {MAX_DOWNLOAD_ATTEMPTS}"))
+                    .context("Retry in", format!("{} seconds", delay.as_secs()))
+                    .reason(format!("{:#}", anyhow::Error::new(error))),
+                );
                 thread::sleep(delay);
             }
         }
@@ -300,15 +314,15 @@ fn validate_download_size(
         bail!("downloaded empty asset for {}", resource.name);
     }
 
-    if let Some(expected_length) = expected_length {
-        if bytes != expected_length {
-            bail!(
-                "downloaded {} bytes for {}, expected {}",
-                bytes,
-                resource.name,
-                expected_length
-            );
-        }
+    if let Some(expected_length) = expected_length
+        && bytes != expected_length
+    {
+        bail!(
+            "downloaded {} bytes for {}, expected {}",
+            bytes,
+            resource.name,
+            expected_length
+        );
     }
 
     Ok(())
@@ -341,28 +355,31 @@ fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
 
     match fs::rename(from, to) {
         Ok(()) => {
-            if had_existing {
-                if let Err(error) = remove_file_if_exists(&backup) {
-                    diagnostics::warning(format_args!(
-                        "failed to remove replaced asset backup: path={} reason={error}",
-                        backup.display()
-                    ));
-                }
+            if had_existing && let Err(error) = remove_file_if_exists(&backup) {
+                diagnostics::record(
+                    Diagnostic::warning(
+                        "resource.cleanup-failed",
+                        "Replaced resource backup could not be removed",
+                    )
+                    .context("Path", backup.display())
+                    .reason(error)
+                    .suggestion(
+                        "The installed resource is valid; the backup can be removed manually",
+                    ),
+                );
             }
             Ok(())
         }
         Err(error) => {
-            if had_existing {
-                if let Err(restore_error) = fs::rename(&backup, to) {
-                    return Err(io::Error::new(
-                        error.kind(),
-                        format!(
-                            "failed to install {}: {error}; also failed to restore backup {}: {restore_error}",
-                            to.display(),
-                            backup.display()
-                        ),
-                    ));
-                }
+            if had_existing && let Err(restore_error) = fs::rename(&backup, to) {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to install {}: {error}; also failed to restore backup {}: {restore_error}",
+                        to.display(),
+                        backup.display()
+                    ),
+                ));
             }
             Err(error)
         }

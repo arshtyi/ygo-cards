@@ -4,15 +4,13 @@ use anyhow::Result;
 use clap::error::ErrorKind;
 use ygo_cards::{
     cards::{BuildOptions, LfStatisticsOptions},
-    diagnostics::{self, BUILD_LOG_PATH},
+    diagnostics::{self, BUILD_LOG_PATH, Diagnostic},
 };
 
 use crate::{
     cli::Options,
     latest::compare_latest_release,
-    report::{
-        SUMMARY_REPORT, print_summary_report, print_write_report, write_summary_report,
-    },
+    report::{SUMMARY_REPORT, print_summary_report, print_write_report, write_summary_report},
 };
 
 pub(crate) fn execute() -> ExitCode {
@@ -32,35 +30,83 @@ pub(crate) fn execute() -> ExitCode {
 
     let log_path = match diagnostics::init() {
         Ok(path) => path,
-        Err(_) => return ExitCode::FAILURE,
+        Err(error) => {
+            print_error("Could not initialize build diagnostics", &error, None);
+            return ExitCode::FAILURE;
+        }
     };
     diagnostics::install_panic_hook();
 
     match generate(options) {
         Ok(()) => match diagnostics::finish() {
             Ok(()) => {
-                println!("build log -> {}", log_path.display());
+                let diagnostic_summary = diagnostics::snapshot()
+                    .map(|snapshot| {
+                        if snapshot.is_clean() {
+                            String::from("clean")
+                        } else {
+                            format!(
+                                "{} {}, {} {}",
+                                snapshot.warnings(),
+                                plural(snapshot.warnings(), "warning", "warnings"),
+                                snapshot.errors(),
+                                plural(snapshot.errors(), "error", "errors")
+                            )
+                        }
+                    })
+                    .unwrap_or_else(|_| String::from("summary unavailable"));
+                println!(
+                    "\nBuild complete\n  {:<12} {}\n  {:<12} {} ({})",
+                    "Report",
+                    SUMMARY_REPORT,
+                    "Diagnostics",
+                    log_path.display(),
+                    diagnostic_summary
+                );
                 ExitCode::SUCCESS
             }
-            Err(_) => ExitCode::FAILURE,
+            Err(error) => {
+                print_error(
+                    "Build completed, but diagnostics could not be finalized",
+                    &error,
+                    Some(&log_path),
+                );
+                ExitCode::FAILURE
+            }
         },
         Err(error) => {
-            diagnostics::error(format_args!("build failed: {error:#}"));
-            let _ = diagnostics::finish();
-            println!("build failed; log -> {}", log_path.display());
+            diagnostics::record(
+                Diagnostic::error("build.failed", "Build failed")
+                    .reason(format_error_chain(&error))
+                    .suggestion("Review the error chain and earlier diagnostics before retrying"),
+            );
+            let finish_error = diagnostics::finish().err();
+            print_error("Build failed", &error, Some(&log_path));
+            if let Some(finish_error) = finish_error {
+                eprintln!("  Diagnostics could not be finalized: {finish_error:#}");
+            }
             ExitCode::FAILURE
         }
     }
 }
 
 fn command_line_failure(error: clap::Error) -> ExitCode {
-    if diagnostics::init().is_ok() {
-        diagnostics::error(format_args!(
-            "invalid command-line arguments:\n{}",
-            error.to_string().trim()
-        ));
-        let _ = diagnostics::finish();
-        println!("build failed; log -> {BUILD_LOG_PATH}");
+    let message = error.to_string();
+    let _ = error.print();
+
+    match diagnostics::init() {
+        Ok(_) => {
+            diagnostics::record(
+                Diagnostic::error("cli.invalid-arguments", "Invalid command-line arguments")
+                    .reason(message.trim())
+                    .suggestion("Run ygo-cards --help to review the supported options"),
+            );
+            match diagnostics::finish() {
+                Ok(()) => eprintln!("Diagnostics: {BUILD_LOG_PATH}"),
+                Err(error) => eprintln!("Could not finalize diagnostics: {error:#}"),
+            }
+        }
+        Err(error) => eprintln!("Could not initialize diagnostics: {error:#}"),
     }
     ExitCode::from(2)
 }
@@ -85,9 +131,18 @@ fn generate(options: Options) -> Result<()> {
 
     let reports = [&ot_report, &rd_report];
     let latest_comparisons = compare_latest_release(&reports)?;
-    let summary_path =
-        write_summary_report(&reports, &latest_comparisons, Path::new(SUMMARY_REPORT))?;
-    println!("summary report -> {}", summary_path.display());
+    let diagnostic_snapshot = diagnostics::snapshot()?;
+    anyhow::ensure!(
+        diagnostic_snapshot.errors() == 0,
+        "build recorded {} internal error diagnostics; see {BUILD_LOG_PATH}",
+        diagnostic_snapshot.errors()
+    );
+    write_summary_report(
+        &reports,
+        &latest_comparisons,
+        &diagnostic_snapshot,
+        Path::new(SUMMARY_REPORT),
+    )?;
     print_summary_report(&reports, &latest_comparisons);
 
     Ok(())
@@ -95,16 +150,89 @@ fn generate(options: Options) -> Result<()> {
 
 fn prepare_resources(refresh: bool) -> Result<()> {
     if !refresh {
-        return ygo_cards::resources::ensure_all();
+        ygo_cards::resources::ensure_all()?;
+        println!("Resources\n  Ready          assets/");
+        return Ok(());
     }
 
+    println!("Resources");
     for resource in ygo_cards::resources::download_all()? {
         println!(
-            "downloaded {:>8} bytes in {} attempt(s) -> {}",
-            resource.bytes,
+            "  {:<28} {:>10} bytes, {} {}",
+            resource.path.display(),
+            format_count(resource.bytes),
             resource.attempts,
-            resource.path.display()
+            if resource.attempts == 1 {
+                "attempt"
+            } else {
+                "attempts"
+            }
         );
     }
     Ok(())
+}
+
+fn print_error(title: &str, error: &anyhow::Error, log_path: Option<&Path>) {
+    eprintln!("\n{title}");
+    for (index, cause) in error.chain().enumerate() {
+        if index == 0 {
+            eprintln!("  Error: {cause}");
+        } else if index == 1 {
+            eprintln!("  Caused by:");
+            eprintln!("    {index}. {cause}");
+        } else {
+            eprintln!("    {index}. {cause}");
+        }
+    }
+    if let Some(path) = log_path {
+        eprintln!("  Diagnostics: {}", path.display());
+    }
+}
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    let mut chain = error.chain();
+    let mut output = chain
+        .next()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| String::from("unknown error"));
+    for cause in chain {
+        output.push_str("\ncaused by: ");
+        output.push_str(&cause.to_string());
+    }
+    output
+}
+
+fn format_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, character) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            formatted.push(',');
+        }
+        formatted.push(character);
+    }
+    formatted
+}
+
+fn plural<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
+    if count == 1 { singular } else { plural }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Context;
+
+    use super::*;
+
+    #[test]
+    fn formats_error_chains_on_separate_lines() {
+        let error = std::fs::read_to_string("missing-file")
+            .context("failed to load fixture")
+            .unwrap_err();
+
+        let formatted = format_error_chain(&error);
+
+        assert!(formatted.starts_with("failed to load fixture\ncaused by: "));
+        assert!(formatted.contains("No such file or directory"));
+    }
 }

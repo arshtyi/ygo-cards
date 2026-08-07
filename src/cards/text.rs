@@ -50,8 +50,7 @@ fn is_effect_text_note_line(line: &str) -> bool {
             | "（状态类效果可在基本分处查看)"
             | "（限制类和状态类效果可在基本分处查看）"
             | "（限制类和状态类效果可在基本分处查看)"
-    )
-        || (line.starts_with("（注：") && (line.ends_with('）') || line.ends_with(')')))
+    ) || (line.starts_with("（注：") && (line.ends_with('）') || line.ends_with(')')))
 }
 
 #[cfg(test)]

@@ -3,10 +3,7 @@ use crate::cards::{
     text::{normalize_card_text, strip_effect_text_note_lines},
 };
 
-pub(super) fn normalize_description(
-    description: &str,
-    card_type: &[String],
-) -> Option<String> {
+pub(super) fn normalize_description(description: &str, card_type: &[String]) -> Option<String> {
     let description = normalize_card_text(description);
 
     if !has_label(card_type, "灵摆") {
@@ -120,10 +117,7 @@ pub(super) fn normalize_pendulum_scale(
     Some(Some(rscale))
 }
 
-pub(super) fn normalize_link_value(
-    raw_level: i64,
-    card_type: &[String],
-) -> Option<Option<i64>> {
+pub(super) fn normalize_link_value(raw_level: i64, card_type: &[String]) -> Option<Option<i64>> {
     if !has_label(card_type, "怪兽") || !has_label(card_type, "连接") {
         return Some(None);
     }
@@ -249,10 +243,7 @@ mod tests {
             Some(String::from("P1"))
         );
         assert_eq!(
-            normalize_pendulum_description(
-                "首行\r\nmissing marker",
-                &labels(&["怪兽", "灵摆"])
-            ),
+            normalize_pendulum_description("首行\r\nmissing marker", &labels(&["怪兽", "灵摆"])),
             None
         );
     }
@@ -308,23 +299,14 @@ mod tests {
             Some(Some(8))
         );
         assert_eq!(
-            normalize_pendulum_scale(
-                (7 << 24) | (8 << 16) | 4,
-                &labels(&["怪兽", "灵摆"])
-            ),
+            normalize_pendulum_scale((7 << 24) | (8 << 16) | 4, &labels(&["怪兽", "灵摆"])),
             None
         );
         assert_eq!(
-            normalize_pendulum_scale(
-                (14 << 24) | (14 << 16) | 4,
-                &labels(&["怪兽", "灵摆"])
-            ),
+            normalize_pendulum_scale((14 << 24) | (14 << 16) | 4, &labels(&["怪兽", "灵摆"])),
             None
         );
-        assert_eq!(
-            normalize_pendulum_scale(4, &labels(&["怪兽"])),
-            Some(None)
-        );
+        assert_eq!(normalize_pendulum_scale(4, &labels(&["怪兽"])), Some(None));
     }
 
     #[test]
@@ -342,13 +324,7 @@ mod tests {
             normalize_link_marker(0x200, &labels(&["怪兽", "连接"])),
             None
         );
-        assert_eq!(
-            normalize_link_marker(0xaa, &labels(&["怪兽"])),
-            Some(None)
-        );
-        assert_eq!(
-            normalize_link_marker(0xaa, &labels(&["魔法"])),
-            Some(None)
-        );
+        assert_eq!(normalize_link_marker(0xaa, &labels(&["怪兽"])), Some(None));
+        assert_eq!(normalize_link_marker(0xaa, &labels(&["魔法"])), Some(None));
     }
 }

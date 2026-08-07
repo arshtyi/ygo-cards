@@ -179,11 +179,7 @@ fn read_cards(
     })
 }
 
-fn build_card(
-    row: CardRow,
-    lf_list: &LfList,
-    images: &mut ImageResolver,
-) -> Option<RdCard> {
+fn build_card(row: CardRow, lf_list: &LfList, images: &mut ImageResolver) -> Option<RdCard> {
     if row.id <= 0 {
         rejection::card(
             "RD",
@@ -283,10 +279,10 @@ fn summarize_lf(cards: &[RdCard], options: LfStatisticsOptions) -> Vec<LfSummary
         .iter()
         .filter(|card| !options.ignore_aliases || card.alias == 0)
     {
-        if let Ok(limit) = usize::try_from(card.lf) {
-            if let Some(count) = counts.get_mut(limit) {
-                *count += 1;
-            }
+        if let Ok(limit) = usize::try_from(card.lf)
+            && let Some(count) = counts.get_mut(limit)
+        {
+            *count += 1;
         }
     }
 

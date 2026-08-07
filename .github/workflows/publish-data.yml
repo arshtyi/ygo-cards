@@ -120,15 +120,18 @@ jobs:
 
       - name: Prepare release notes
         if: steps.release.outputs.changed == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
+          set -euo pipefail
+
+          short_sha="${GITHUB_SHA:0:7}"
           {
-            cat output/report.md
-            printf '\n<details>\n'
-            printf '<summary>Build log</summary>\n\n'
-            printf '````log\n'
-            cat output/build.log
-            printf '````\n\n'
-            printf '</details>\n'
+            printf '# ygo-cards `%s`\n\n' "$TAG"
+            printf '_Automated card-data release built from commit '
+            printf '[`%s`](https://github.com/%s/commit/%s)._\n\n' \
+              "$short_sha" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+            sed '1,2d' output/report.md
           } > output/release-notes.md
           test -s output/release-notes.md
 

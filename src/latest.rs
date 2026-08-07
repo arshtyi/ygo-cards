@@ -3,7 +3,10 @@ use std::{collections::HashSet, fs, path::Path, time::Duration};
 use anyhow::{Context, Result};
 use reqwest::StatusCode;
 use serde::Deserialize;
-use ygo_cards::cards::WriteReport;
+use ygo_cards::{
+    cards::WriteReport,
+    diagnostics::{self, Diagnostic},
+};
 
 pub(crate) fn compare_latest_release(
     reports: &[&WriteReport],
@@ -45,17 +48,31 @@ fn compare_latest_release_file(
             )
         }
         LatestCardsFetch::NotFound => {
-            ygo_cards::diagnostics::warning(format_args!(
-                "latest release comparison skipped: environment={} url={} reason=HTTP 404 Not Found",
-                report.label, latest_url
-            ));
+            diagnostics::record(
+                Diagnostic::warning(
+                    "release.comparison-skipped",
+                    "Latest-release comparison was skipped",
+                )
+                .context("Environment", report.label)
+                .context("URL", &latest_url)
+                .reason("HTTP 404 Not Found")
+                .suggestion("This is expected before the first published release"),
+            );
             (LatestComparisonStatus::NotFound, Vec::new())
         }
         LatestCardsFetch::Unavailable(reason) => {
-            ygo_cards::diagnostics::warning(format_args!(
-                "latest release comparison skipped: environment={} url={} reason={reason}",
-                report.label, latest_url
-            ));
+            diagnostics::record(
+                Diagnostic::warning(
+                    "release.comparison-skipped",
+                    "Latest-release comparison was skipped",
+                )
+                .context("Environment", report.label)
+                .context("URL", &latest_url)
+                .reason(&reason)
+                .suggestion(
+                    "The generated dataset is still valid, but new-card counts are unavailable",
+                ),
+            );
             (LatestComparisonStatus::Unavailable(reason), Vec::new())
         }
     };
@@ -72,7 +89,12 @@ fn compare_latest_release_file(
 fn fetch_latest_card_summaries(client: &reqwest::blocking::Client, url: &str) -> LatestCardsFetch {
     let response = match client.get(url).send() {
         Ok(response) => response,
-        Err(error) => return LatestCardsFetch::Unavailable(format!("download failed: {error}")),
+        Err(error) => {
+            return LatestCardsFetch::Unavailable(format!(
+                "download failed: {:#}",
+                anyhow::Error::new(error)
+            ));
+        }
     };
 
     match response.status() {
@@ -83,12 +105,17 @@ fn fetch_latest_card_summaries(client: &reqwest::blocking::Client, url: &str) ->
 
     let text = match response.text() {
         Ok(text) => text,
-        Err(error) => return LatestCardsFetch::Unavailable(format!("read failed: {error}")),
+        Err(error) => {
+            return LatestCardsFetch::Unavailable(format!(
+                "read failed: {:#}",
+                anyhow::Error::new(error)
+            ));
+        }
     };
 
     match parse_card_summaries(&text) {
         Ok(cards) => LatestCardsFetch::Cards(cards),
-        Err(error) => LatestCardsFetch::Unavailable(format!("invalid JSON: {error}")),
+        Err(error) => LatestCardsFetch::Unavailable(format!("invalid JSON: {error:#}")),
     }
 }
 

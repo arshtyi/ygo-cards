@@ -4,12 +4,7 @@ mod masks;
 mod rejection;
 mod text;
 
-use std::{
-    fs,
-    iter::Sum,
-    ops::AddAssign,
-    path::Path,
-};
+use std::{fs, iter::Sum, ops::AddAssign, path::Path};
 
 use anyhow::{Context, Result};
 use serde::Serialize;

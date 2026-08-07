@@ -70,10 +70,7 @@ fn primary_type(raw_type: i64) -> Option<(PrimaryType, String)> {
         && raw_type & masks.inferred_monster_type_bit != 0
         && matched_subtype_flags(raw_type).len() > 1
     {
-        primary = Some((
-            PrimaryType::Monster,
-            primary_label(PrimaryType::Monster)?,
-        ));
+        primary = Some((PrimaryType::Monster, primary_label(PrimaryType::Monster)?));
     }
 
     primary

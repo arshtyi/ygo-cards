@@ -63,10 +63,12 @@ mod tests {
 
     #[test]
     fn requires_image_checks_when_skipping_image_failures() {
-        let error =
-            Options::try_parse_from(["ygo-cards", "--skip-image-failures"]).unwrap_err();
+        let error = Options::try_parse_from(["ygo-cards", "--skip-image-failures"]).unwrap_err();
 
-        assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]

@@ -16,6 +16,22 @@ pub(super) fn image_failure_action(summary: ImageSummary) -> &'static str {
     }
 }
 
+pub(super) fn format_count(value: usize) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, character) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            formatted.push(',');
+        }
+        formatted.push(character);
+    }
+    formatted
+}
+
+pub(super) fn plural<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
+    if count == 1 { singular } else { plural }
+}
+
 pub(super) struct ReportTotals {
     pub(super) cards_written: usize,
     pub(super) cards_skipped: usize,
