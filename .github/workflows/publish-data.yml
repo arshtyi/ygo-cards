@@ -143,8 +143,6 @@ jobs:
           gh release create "$TAG" \
             output/ot.json \
             output/rd.json \
-            output/report.md \
-            output/build.log \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "$TAG" \
