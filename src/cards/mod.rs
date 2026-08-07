@@ -18,19 +18,6 @@ pub struct BuildOptions {
     pub skip_image_failures: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LfStatisticsOptions {
-    pub ignore_aliases: bool,
-}
-
-impl Default for LfStatisticsOptions {
-    fn default() -> Self {
-        Self {
-            ignore_aliases: true,
-        }
-    }
-}
-
 fn write_cards(path: &Path, cards: &impl Serialize) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -46,16 +33,8 @@ pub struct WriteReport {
     pub path: std::path::PathBuf,
     pub cards_written: usize,
     pub cards_skipped: usize,
-    pub lf_statistics_options: LfStatisticsOptions,
-    pub lf_summaries: Vec<LfSummary>,
     pub image_summary: ImageSummary,
     pub image_failures: Vec<ImageFailure>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LfSummary {
-    pub label: &'static str,
-    pub counts: [usize; 4],
 }
 
 #[derive(Debug, Clone, Copy, Default)]

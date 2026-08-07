@@ -9,8 +9,8 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use super::{
-    BuildOptions, LfStatisticsOptions, LfSummary, WriteReport, images::ImageResolver,
-    masks::ensure_ot_masks, rejection, write_cards,
+    BuildOptions, WriteReport, images::ImageResolver, masks::ensure_ot_masks, rejection,
+    write_cards,
 };
 
 use self::{
@@ -73,13 +73,6 @@ struct CardRow {
 }
 
 pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
-    write_json_with_lf_statistics(options, LfStatisticsOptions::default())
-}
-
-pub fn write_json_with_lf_statistics(
-    options: BuildOptions,
-    lf_statistics_options: LfStatisticsOptions,
-) -> Result<WriteReport> {
     ensure_ot_masks()?;
     let lf_lists = read_lf_lists(Path::new(LFLIST))?;
     let mut images = ImageResolver::new(options)?;
@@ -93,8 +86,6 @@ pub fn write_json_with_lf_statistics(
         path,
         cards_written: read_report.cards.len(),
         cards_skipped: read_report.cards_skipped,
-        lf_statistics_options,
-        lf_summaries: summarize_lf(&read_report.cards, lf_statistics_options),
         image_summary: images.summary(),
         image_failures: images.failures().to_vec(),
     })
@@ -311,44 +302,6 @@ fn build_card(row: CardRow, lf_lists: &LfLists, images: &mut ImageResolver) -> O
     })
 }
 
-fn summarize_lf(cards: &[OtCard], options: LfStatisticsOptions) -> Vec<LfSummary> {
-    let mut ocg = [0; 4];
-    let mut tcg = [0; 4];
-
-    for card in cards
-        .iter()
-        .filter(|card| !options.ignore_aliases || card.alias == 0)
-    {
-        if let Some(limit) = card
-            .lf
-            .first()
-            .and_then(|limit| usize::try_from(*limit).ok())
-            && let Some(count) = ocg.get_mut(limit)
-        {
-            *count += 1;
-        }
-        if let Some(limit) = card
-            .lf
-            .get(1)
-            .and_then(|limit| usize::try_from(*limit).ok())
-            && let Some(count) = tcg.get_mut(limit)
-        {
-            *count += 1;
-        }
-    }
-
-    vec![
-        LfSummary {
-            label: "OT OCG",
-            counts: ocg,
-        },
-        LfSummary {
-            label: "OT TCG",
-            counts: tcg,
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,46 +336,5 @@ mod tests {
             json,
             r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"description":"A legendary dragon.","alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1],"atk":3000,"def":2500,"level":8}"#
         );
-    }
-
-    #[test]
-    fn summarizes_limits_with_alias_filtering() {
-        let card = |alias, lf| OtCard {
-            id: 1,
-            name: String::new(),
-            attribute: 0,
-            image: 1,
-            description: String::new(),
-            pendulum_description: None,
-            alias,
-            r#type: Vec::new(),
-            lf,
-            atk: None,
-            def: None,
-            level: None,
-            rank: None,
-            pendulum_scale: None,
-            link_value: None,
-            link_marker: None,
-        };
-        let cards = [
-            card(0, vec![0, 1]),
-            card(123, vec![0, 1]),
-            card(0, vec![2, 3]),
-        ];
-        let summaries = summarize_lf(&cards, LfStatisticsOptions::default());
-
-        assert_eq!(summaries[0].counts, [1, 0, 1, 0]);
-        assert_eq!(summaries[1].counts, [0, 1, 0, 1]);
-
-        let summaries = summarize_lf(
-            &cards,
-            LfStatisticsOptions {
-                ignore_aliases: false,
-            },
-        );
-
-        assert_eq!(summaries[0].counts, [2, 0, 1, 0]);
-        assert_eq!(summaries[1].counts, [0, 2, 0, 1]);
     }
 }

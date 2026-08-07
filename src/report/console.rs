@@ -21,41 +21,6 @@ fn render_write_report(report: &WriteReport) -> String {
         format_count(report.cards_written),
         format_count(report.cards_skipped)
     );
-    let _ = writeln!(
-        output,
-        "  {:<16} {}",
-        "LF aliases",
-        if report.lf_statistics_options.ignore_aliases {
-            "ignored"
-        } else {
-            "included"
-        }
-    );
-
-    if !report.lf_summaries.is_empty() {
-        let _ = writeln!(
-            output,
-            "  Forbidden lists (forbidden / limited / semi-limited / unlimited)"
-        );
-        let width = report
-            .lf_summaries
-            .iter()
-            .map(|summary| summary.label.len())
-            .max()
-            .unwrap_or_default();
-        for summary in &report.lf_summaries {
-            let _ = writeln!(
-                output,
-                "    {:<width$}  {:>5} / {:>5} / {:>5} / {:>5}",
-                summary.label,
-                format_count(summary.counts[0]),
-                format_count(summary.counts[1]),
-                format_count(summary.counts[2]),
-                format_count(summary.counts[3])
-            );
-        }
-    }
-
     append_image_summary(&mut output, report.image_summary);
     output.trim_end().to_string()
 }
@@ -183,7 +148,7 @@ fn render_summary_report(
 mod tests {
     use std::path::PathBuf;
 
-    use ygo_cards::cards::{ImageSummary, LfStatisticsOptions};
+    use ygo_cards::cards::ImageSummary;
 
     use super::*;
 
@@ -194,8 +159,6 @@ mod tests {
             path: PathBuf::from("output/ot.json"),
             cards_written: 14_947,
             cards_skipped: 1,
-            lf_statistics_options: LfStatisticsOptions::default(),
-            lf_summaries: Vec::new(),
             image_summary: ImageSummary {
                 enabled: true,
                 cards_checked: 11,

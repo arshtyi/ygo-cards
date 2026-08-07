@@ -8,7 +8,7 @@ The tool downloads upstream YGOPro-compatible resources, normalizes card records
 
 - `output/ot.json`: normalized OT card data.
 - `output/rd.json`: normalized RD card data.
-- `output/report.md`: release-ready Markdown with an at-a-glance dataset summary, new cards since the current `latest` release, image validation, forbidden-list statistics, and grouped build diagnostics.
+- `output/report.md`: release-ready Markdown with an at-a-glance dataset summary, new cards since the current `latest` release, image validation, and grouped build diagnostics.
 - `output/build.log`: numbered, structured warning and error records with aligned context, reasons, suggestions, and final severity totals.
 
 Normal progress and dataset summaries are written to stdout. Fatal failures are written to stderr with their complete error chain and the diagnostics path.
@@ -27,8 +27,6 @@ Options:
           Check primary and alias images; failed checks use image 0 by default
       --skip-image-failures
           Skip cards whose primary and alias images both fail (requires --check-images)
-      --include-aliases-in-lf-statistics
-          Include cards with alias != 0 in forbidden-list statistics
   -h, --help
           Print help
   -V, --version

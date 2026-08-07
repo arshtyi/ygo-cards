@@ -16,8 +16,8 @@ use self::{
     types::{is_legend, normalize_attribute, parse_card_type},
 };
 use super::{
-    BuildOptions, LfStatisticsOptions, LfSummary, WriteReport, images::ImageResolver,
-    masks::ensure_rd_masks, rejection, write_cards,
+    BuildOptions, WriteReport, images::ImageResolver, masks::ensure_rd_masks, rejection,
+    write_cards,
 };
 
 const CARDS_DB: &str = "assets/rd/rd_standard.cdb";
@@ -63,13 +63,6 @@ struct CardRow {
 }
 
 pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
-    write_json_with_lf_statistics(options, LfStatisticsOptions::default())
-}
-
-pub fn write_json_with_lf_statistics(
-    options: BuildOptions,
-    lf_statistics_options: LfStatisticsOptions,
-) -> Result<WriteReport> {
     ensure_rd_masks()?;
     let lf_list = read_lf_list(Path::new(LFLIST))?;
     let mut images = ImageResolver::new(options)?;
@@ -83,8 +76,6 @@ pub fn write_json_with_lf_statistics(
         path,
         cards_written: read_report.cards.len(),
         cards_skipped: read_report.cards_skipped,
-        lf_statistics_options,
-        lf_summaries: summarize_lf(&read_report.cards, lf_statistics_options),
         image_summary: images.summary(),
         image_failures: images.failures().to_vec(),
     })
@@ -272,26 +263,6 @@ fn build_card(row: CardRow, lf_list: &LfList, images: &mut ImageResolver) -> Opt
     })
 }
 
-fn summarize_lf(cards: &[RdCard], options: LfStatisticsOptions) -> Vec<LfSummary> {
-    let mut counts = [0; 4];
-
-    for card in cards
-        .iter()
-        .filter(|card| !options.ignore_aliases || card.alias == 0)
-    {
-        if let Ok(limit) = usize::try_from(card.lf)
-            && let Some(count) = counts.get_mut(limit)
-        {
-            *count += 1;
-        }
-    }
-
-    vec![LfSummary {
-        label: "RD",
-        counts,
-    }]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,39 +295,6 @@ mod tests {
             json,
             r#"{"id":120100001,"name":"大道魔法-爆发","attribute":0,"image":120100001,"description":"【条件】\n无","legend":false,"type":["魔法"],"lf":3,"alias":0}"#
         );
-    }
-
-    #[test]
-    fn summarizes_limits_with_alias_filtering() {
-        let card = |alias, lf| RdCard {
-            id: 1,
-            name: String::new(),
-            attribute: 0,
-            image: 1,
-            description: String::new(),
-            legend: false,
-            r#type: Vec::new(),
-            lf,
-            alias,
-            atk: None,
-            def: None,
-            level: None,
-            maximum: None,
-            maximum_atk: None,
-        };
-        let cards = [card(0, 0), card(123, 0), card(0, 2)];
-        let summaries = summarize_lf(&cards, LfStatisticsOptions::default());
-
-        assert_eq!(summaries[0].counts, [1, 0, 1, 0]);
-
-        let summaries = summarize_lf(
-            &cards,
-            LfStatisticsOptions {
-                ignore_aliases: false,
-            },
-        );
-
-        assert_eq!(summaries[0].counts, [2, 0, 1, 0]);
     }
 
     #[test]
