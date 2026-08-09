@@ -2,15 +2,15 @@ use std::{path::Path, process::ExitCode};
 
 use anyhow::Result;
 use clap::error::ErrorKind;
-use ygo_cards::{
-    cards::BuildOptions,
-    diagnostics::{self, BUILD_LOG_PATH, Diagnostic},
-};
 
 use crate::{
+    cards::{self, GenerationOptions},
     cli::Options,
+    diagnostics::{self, BUILD_LOG_PATH, Diagnostic},
+    formatting::{format_count, plural},
     latest::compare_latest_release,
-    report::{SUMMARY_REPORT, print_summary_report, print_write_report, write_summary_report},
+    report::{SUMMARY_REPORT, print_dataset_report, print_summary_report, write_summary_report},
+    resources,
 };
 
 pub(crate) fn execute() -> ExitCode {
@@ -114,15 +114,15 @@ fn command_line_failure(error: clap::Error) -> ExitCode {
 fn generate(options: Options) -> Result<()> {
     prepare_resources(options.refresh_resources)?;
 
-    let build_options = BuildOptions {
+    let generation_options = GenerationOptions {
         check_images: options.check_images,
         skip_image_failures: options.skip_image_failures,
     };
-    let ot_report = ygo_cards::cards::ot::write_json(build_options)?;
-    print_write_report(&ot_report);
+    let ot_report = cards::ot::generate(generation_options)?;
+    print_dataset_report(&ot_report);
 
-    let rd_report = ygo_cards::cards::rd::write_json(build_options)?;
-    print_write_report(&rd_report);
+    let rd_report = cards::rd::generate(generation_options)?;
+    print_dataset_report(&rd_report);
 
     let reports = [&ot_report, &rd_report];
     let latest_comparisons = compare_latest_release(&reports)?;
@@ -145,13 +145,13 @@ fn generate(options: Options) -> Result<()> {
 
 fn prepare_resources(refresh: bool) -> Result<()> {
     if !refresh {
-        ygo_cards::resources::ensure_all()?;
+        resources::ensure_all()?;
         println!("Resources\n  Ready          assets/");
         return Ok(());
     }
 
     println!("Resources");
-    for resource in ygo_cards::resources::download_all()? {
+    for resource in resources::download_all()? {
         println!(
             "  {:<28} {:>10} bytes, {} {}",
             resource.path.display(),
@@ -195,22 +195,6 @@ fn format_error_chain(error: &anyhow::Error) -> String {
         output.push_str(&cause.to_string());
     }
     output
-}
-
-fn format_count(value: u64) -> String {
-    let digits = value.to_string();
-    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, character) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            formatted.push(',');
-        }
-        formatted.push(character);
-    }
-    formatted
-}
-
-fn plural<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
-    if count == 1 { singular } else { plural }
 }
 
 #[cfg(test)]

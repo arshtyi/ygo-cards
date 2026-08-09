@@ -12,9 +12,10 @@ use reqwest::{
     header::{CONTENT_TYPE, RANGE},
 };
 
-use super::{BuildOptions, FailedImageCheck, ImageFailure, ImageSummary};
+use super::{FailedImageCheck, GenerationOptions, ImageCheckFailure, ImageCheckSummary};
 use crate::{
     diagnostics::{self, Diagnostic},
+    environment::Environment,
     http::{backoff_delay, is_retryable_status},
 };
 
@@ -24,13 +25,13 @@ const MAX_IMAGE_CHECK_ATTEMPTS: u32 = 3;
 pub(crate) struct ImageResolver {
     mode: ImageMode,
     cache: HashMap<i64, ImageCheck>,
-    summary: ImageSummary,
-    failures: Vec<ImageFailure>,
+    summary: ImageCheckSummary,
+    failures: Vec<ImageCheckFailure>,
     progress: Option<ProgressState>,
 }
 
 impl ImageResolver {
-    pub(crate) fn new(options: BuildOptions) -> Result<Self> {
+    pub(crate) fn new(options: GenerationOptions) -> Result<Self> {
         anyhow::ensure!(
             options.check_images || !options.skip_image_failures,
             "skipping image failures requires image checks"
@@ -47,7 +48,9 @@ impl ImageResolver {
                     .timeout(Duration::from_secs(20))
                     .build()
                     .context("failed to build HTTP image client")?,
-                base_url: crate::urls::urls()?.image_base_url().to_string(),
+                base_url: crate::endpoints::endpoints()?
+                    .card_image_base_url()
+                    .to_string(),
             }
         } else {
             ImageMode::UseCardId
@@ -56,10 +59,10 @@ impl ImageResolver {
         Ok(Self {
             mode,
             cache: HashMap::new(),
-            summary: ImageSummary {
+            summary: ImageCheckSummary {
                 enabled: options.check_images,
                 skip_failures: options.skip_image_failures,
-                ..ImageSummary::default()
+                ..ImageCheckSummary::default()
             },
             failures: Vec::new(),
             progress: None,
@@ -68,7 +71,7 @@ impl ImageResolver {
 
     pub(crate) fn resolve(
         &mut self,
-        environment: &'static str,
+        environment: Environment,
         id: i64,
         name: &str,
         alias: i64,
@@ -114,7 +117,7 @@ impl ImageResolver {
                 )
                 .reason("No primary or distinct alias image candidate passed validation"),
         );
-        self.failures.push(ImageFailure {
+        self.failures.push(ImageCheckFailure {
             environment,
             id,
             name: name.to_string(),
@@ -131,11 +134,11 @@ impl ImageResolver {
         }
     }
 
-    pub(crate) fn summary(&self) -> ImageSummary {
+    pub(crate) fn summary(&self) -> ImageCheckSummary {
         self.summary
     }
 
-    pub(crate) fn failures(&self) -> &[ImageFailure] {
+    pub(crate) fn failures(&self) -> &[ImageCheckFailure] {
         &self.failures
     }
 
@@ -464,8 +467,8 @@ fn is_image_response(response: &Response) -> bool {
 mod tests {
     use super::*;
 
-    fn options(check_images: bool, skip_image_failures: bool) -> BuildOptions {
-        BuildOptions {
+    fn options(check_images: bool, skip_image_failures: bool) -> GenerationOptions {
+        GenerationOptions {
             check_images,
             skip_image_failures,
         }
@@ -506,7 +509,7 @@ mod tests {
             ImageCheck::NetworkError(String::from("request timed out")),
         );
 
-        assert_eq!(resolver.resolve("OT", 100, "Card", 200), Some(0));
+        assert_eq!(resolver.resolve(Environment::Ot, 100, "Card", 200), Some(0));
         assert_eq!(resolver.summary().missing, 1);
         assert_eq!(resolver.summary().cards_skipped, 0);
         let failure = &resolver.failures()[0];
@@ -531,7 +534,7 @@ mod tests {
             .cache
             .insert(200, ImageCheck::Missing(String::from("HTTP 404 Not Found")));
 
-        assert_eq!(resolver.resolve("OT", 100, "Card", 200), None);
+        assert_eq!(resolver.resolve(Environment::Ot, 100, "Card", 200), None);
         assert_eq!(resolver.summary().missing, 1);
         assert_eq!(resolver.summary().cards_skipped, 1);
         assert!(resolver.failures()[0].card_skipped);
@@ -545,7 +548,10 @@ mod tests {
             .insert(100, ImageCheck::Missing(String::from("HTTP 404 Not Found")));
         resolver.cache.insert(200, ImageCheck::Found);
 
-        assert_eq!(resolver.resolve("OT", 100, "Card", 200), Some(200));
+        assert_eq!(
+            resolver.resolve(Environment::Ot, 100, "Card", 200),
+            Some(200)
+        );
         assert_eq!(resolver.summary().alias_found, 1);
         assert!(resolver.failures().is_empty());
     }

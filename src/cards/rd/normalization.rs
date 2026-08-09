@@ -1,10 +1,11 @@
 use crate::cards::{
-    masks::{has_label, rd_masks},
+    has_type,
+    mappings::rd_mappings,
     text::{normalize_card_text, strip_effect_text_note_lines},
 };
 
-pub(super) fn monster_value(value: i64, card_type: &[String]) -> Option<i64> {
-    has_label(card_type, "怪兽").then_some(value)
+pub(super) fn monster_stat(value: i64, card_type: &[String]) -> Option<i64> {
+    has_type(card_type, "怪兽").then_some(value)
 }
 
 pub(super) fn normalize_maximum(
@@ -12,17 +13,20 @@ pub(super) fn normalize_maximum(
     card_type: &[String],
     raw_description: &str,
 ) -> Option<Option<i64>> {
-    if !has_label(card_type, "怪兽") {
+    if !has_type(card_type, "怪兽") {
         return Some(None);
     }
 
-    let mut matched_positions = rd_masks().maximum_name_markers.iter().filter_map(|entry| {
-        entry
-            .markers
-            .iter()
-            .any(|marker| name.contains(marker))
-            .then_some(entry.value)
-    });
+    let mut matched_positions = rd_mappings()
+        .maximum_position_markers
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .markers
+                .iter()
+                .any(|marker| name.contains(marker))
+                .then_some(entry.position)
+        });
     let first_position = matched_positions.next();
     if matched_positions.next().is_some() {
         return None;
@@ -32,7 +36,7 @@ pub(super) fn normalize_maximum(
         return Some(first_position);
     }
 
-    if has_label(card_type, "极大") && parse_maximum_atk(raw_description).is_some() {
+    if has_type(card_type, "极大") && parse_maximum_atk(raw_description).is_some() {
         Some(Some(1))
     } else {
         Some(None)
@@ -188,9 +192,9 @@ mod tests {
 
     #[test]
     fn keeps_stats_for_monsters_only() {
-        assert_eq!(monster_value(2100, &labels(&["怪兽", "效果"])), Some(2100));
-        assert_eq!(monster_value(0, &labels(&["魔法"])), None);
-        assert_eq!(monster_value(0, &labels(&["陷阱"])), None);
+        assert_eq!(monster_stat(2100, &labels(&["怪兽", "效果"])), Some(2100));
+        assert_eq!(monster_stat(0, &labels(&["魔法"])), None);
+        assert_eq!(monster_stat(0, &labels(&["陷阱"])), None);
     }
 
     #[test]

@@ -2,16 +2,19 @@ use std::fmt;
 
 use rusqlite::Error;
 
-use crate::diagnostics::{self, Diagnostic};
+use crate::{
+    diagnostics::{self, Diagnostic},
+    environment::Environment,
+};
 
 pub(crate) struct Card<'a> {
-    environment: &'static str,
+    environment: Environment,
     id: i64,
     name: &'a str,
 }
 
 impl<'a> Card<'a> {
-    pub(crate) fn new(environment: &'static str, id: i64, name: &'a str) -> Self {
+    pub(crate) fn new(environment: Environment, id: i64, name: &'a str) -> Self {
         Self {
             environment,
             id,
@@ -31,7 +34,7 @@ impl<'a> Card<'a> {
 }
 
 pub(crate) fn card(
-    environment: &'static str,
+    environment: Environment,
     id: i64,
     name: Option<&str>,
     reason: fmt::Arguments<'_>,
@@ -46,7 +49,7 @@ pub(crate) fn card(
     diagnostics::record(diagnostic);
 }
 
-pub(crate) fn database_row(environment: &'static str, row_number: usize, error: &Error) {
+pub(crate) fn database_row(environment: Environment, row_number: usize, error: &Error) {
     diagnostics::record(
         Diagnostic::warning("database.row-skipped", "Database row was skipped")
             .context("Environment", environment)

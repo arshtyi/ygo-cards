@@ -1,12 +1,13 @@
 use crate::cards::{
-    masks::{has_label, ot_masks},
+    has_type,
+    mappings::ot_mappings,
     text::{normalize_card_text, strip_effect_text_note_lines},
 };
 
 pub(super) fn normalize_description(description: &str, card_type: &[String]) -> Option<String> {
     let description = normalize_card_text(description);
 
-    if !has_label(card_type, "灵摆") {
+    if !has_type(card_type, "灵摆") {
         return Some(strip_effect_text_note_lines(&description));
     }
 
@@ -25,7 +26,7 @@ pub(super) fn normalize_pendulum_description(
     description: &str,
     card_type: &[String],
 ) -> Option<Option<String>> {
-    if !has_label(card_type, "灵摆") {
+    if !has_type(card_type, "灵摆") {
         return Some(None);
     }
 
@@ -48,7 +49,7 @@ fn monster_description_marker_index(description: &str) -> Option<usize> {
 }
 
 pub(super) fn normalize_atk(raw_atk: i64, card_type: &[String]) -> Option<Option<i64>> {
-    if !has_label(card_type, "怪兽") {
+    if !has_type(card_type, "怪兽") {
         return Some(None);
     }
 
@@ -57,7 +58,7 @@ pub(super) fn normalize_atk(raw_atk: i64, card_type: &[String]) -> Option<Option
 }
 
 pub(super) fn normalize_def(raw_def: i64, card_type: &[String]) -> Option<Option<i64>> {
-    if !has_label(card_type, "怪兽") || has_label(card_type, "连接") {
+    if !has_type(card_type, "怪兽") || has_type(card_type, "连接") {
         return Some(None);
     }
 
@@ -70,7 +71,7 @@ pub(super) fn normalize_def(raw_def: i64, card_type: &[String]) -> Option<Option
 }
 
 pub(super) fn normalize_level(raw_level: i64, card_type: &[String]) -> Option<Option<i64>> {
-    if !has_label(card_type, "怪兽") || has_label(card_type, "超量") || has_label(card_type, "连接")
+    if !has_type(card_type, "怪兽") || has_type(card_type, "超量") || has_type(card_type, "连接")
     {
         return Some(None);
     }
@@ -84,7 +85,7 @@ pub(super) fn normalize_level(raw_level: i64, card_type: &[String]) -> Option<Op
 }
 
 pub(super) fn normalize_rank(raw_level: i64, card_type: &[String]) -> Option<Option<i64>> {
-    if !has_label(card_type, "怪兽") || !has_label(card_type, "超量") {
+    if !has_type(card_type, "怪兽") || !has_type(card_type, "超量") {
         return Some(None);
     }
 
@@ -100,7 +101,7 @@ pub(super) fn normalize_pendulum_scale(
     raw_level: i64,
     card_type: &[String],
 ) -> Option<Option<i64>> {
-    if !has_label(card_type, "怪兽") || !has_label(card_type, "灵摆") {
+    if !has_type(card_type, "怪兽") || !has_type(card_type, "灵摆") {
         return Some(None);
     }
 
@@ -118,7 +119,7 @@ pub(super) fn normalize_pendulum_scale(
 }
 
 pub(super) fn normalize_link_value(raw_level: i64, card_type: &[String]) -> Option<Option<i64>> {
-    if !has_label(card_type, "怪兽") || !has_label(card_type, "连接") {
+    if !has_type(card_type, "怪兽") || !has_type(card_type, "连接") {
         return Some(None);
     }
 
@@ -130,11 +131,11 @@ pub(super) fn normalize_link_value(raw_level: i64, card_type: &[String]) -> Opti
     }
 }
 
-pub(super) fn normalize_link_marker(
+pub(super) fn normalize_link_markers(
     raw_def: i64,
     card_type: &[String],
 ) -> Option<Option<Vec<i64>>> {
-    if !has_label(card_type, "怪兽") || !has_label(card_type, "连接") {
+    if !has_type(card_type, "怪兽") || !has_type(card_type, "连接") {
         return Some(None);
     }
 
@@ -142,12 +143,12 @@ pub(super) fn normalize_link_marker(
         return None;
     }
 
-    let markers = ot_masks()
-        .link_markers
+    let markers = ot_mappings()
+        .link_marker_flags
         .iter()
         .filter_map(|entry| {
-            if raw_def & entry.bit != 0 {
-                Some(entry.value)
+            if raw_def & entry.mask != 0 {
+                Some(entry.output_position)
             } else {
                 None
             }
@@ -170,10 +171,10 @@ fn low_level_byte(raw_level: i64) -> Option<i64> {
 }
 
 fn known_link_marker_mask() -> i64 {
-    ot_masks()
-        .link_markers
+    ot_mappings()
+        .link_marker_flags
         .iter()
-        .fold(0, |mask, entry| mask | entry.bit)
+        .fold(0, |known_mask, entry| known_mask | entry.mask)
 }
 
 #[cfg(test)]
@@ -312,19 +313,19 @@ mod tests {
     #[test]
     fn normalizes_link_markers() {
         assert_eq!(
-            normalize_link_marker(0xaa, &labels(&["怪兽", "连接"])),
+            normalize_link_markers(0xaa, &labels(&["怪兽", "连接"])),
             Some(Some(vec![1, 3, 5, 7]))
         );
         assert_eq!(
-            normalize_link_marker(0x141, &labels(&["怪兽", "连接"])),
+            normalize_link_markers(0x141, &labels(&["怪兽", "连接"])),
             Some(Some(vec![0, 2, 6]))
         );
-        assert_eq!(normalize_link_marker(0, &labels(&["怪兽", "连接"])), None);
+        assert_eq!(normalize_link_markers(0, &labels(&["怪兽", "连接"])), None);
         assert_eq!(
-            normalize_link_marker(0x200, &labels(&["怪兽", "连接"])),
+            normalize_link_markers(0x200, &labels(&["怪兽", "连接"])),
             None
         );
-        assert_eq!(normalize_link_marker(0xaa, &labels(&["怪兽"])), Some(None));
-        assert_eq!(normalize_link_marker(0xaa, &labels(&["魔法"])), Some(None));
+        assert_eq!(normalize_link_markers(0xaa, &labels(&["怪兽"])), Some(None));
+        assert_eq!(normalize_link_markers(0xaa, &labels(&["魔法"])), Some(None));
     }
 }

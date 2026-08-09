@@ -23,14 +23,20 @@ jobs:
 
       - name: Set up Rust
         run: |
-          rustup toolchain install stable --profile minimal
+          rustup toolchain install stable \
+            --profile minimal \
+            --component clippy \
+            --component rustfmt
           rustup default stable
 
-      - name: Test
-        run: cargo test --locked
+      - name: Install just
+        run: cargo install just --locked
+
+      - name: Check
+        run: just check
 
       - name: Generate card data
-        run: cargo run --locked --release -- --refresh-resources --check-images
+        run: just generate --refresh-resources --check-images
 
       - name: Verify generated files
         run: |

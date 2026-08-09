@@ -1,6 +1,6 @@
-mod limits;
+mod classification;
 mod normalization;
-mod types;
+mod restrictions;
 
 use std::path::{Path, PathBuf};
 
@@ -9,26 +9,27 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use super::{
-    BuildOptions, WriteReport, images::ImageResolver, masks::ensure_ot_masks, rejection,
-    write_cards,
+    CardCollection, DatasetReport, GenerationOptions, images::ImageResolver,
+    mappings::ensure_ot_mappings, rejection, write_dataset,
 };
+use crate::environment::Environment;
 
 use self::{
-    limits::{LfLists, read_lf_lists},
+    classification::{map_attribute, map_card_types},
     normalization::{
         normalize_atk, normalize_def, normalize_description, normalize_level,
-        normalize_link_marker, normalize_link_value, normalize_pendulum_description,
+        normalize_link_markers, normalize_link_value, normalize_pendulum_description,
         normalize_pendulum_scale, normalize_rank,
     },
-    types::{normalize_attribute, parse_card_type},
+    restrictions::{ForbiddenLists, read_forbidden_lists},
 };
 
-const CARDS_DB: &str = "assets/ot/cards.cdb";
-const LFLIST: &str = "assets/ot/lflist.conf";
-const OUTPUT_JSON: &str = "output/ot.json";
+const DATABASE_PATH: &str = "assets/ot/cards.cdb";
+const FORBIDDEN_LIST_PATH: &str = "assets/ot/lflist.conf";
+const OUTPUT_PATH: &str = "output/ot.json";
 
 #[derive(Debug, Serialize)]
-struct OtCard {
+struct Card {
     id: i64,
     name: String,
     attribute: i64,
@@ -41,7 +42,8 @@ struct OtCard {
     pendulum_description: Option<String>,
     alias: i64,
     r#type: Vec<String>,
-    lf: Vec<i64>,
+    #[serde(rename = "lf")]
+    restrictions: Vec<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     atk: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,52 +57,47 @@ struct OtCard {
     #[serde(skip_serializing_if = "Option::is_none", rename = "linkValue")]
     link_value: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "linkMarker")]
-    link_marker: Option<Vec<i64>>,
+    link_markers: Option<Vec<i64>>,
 }
 
 #[derive(Debug)]
-struct CardRow {
+struct DatabaseRow {
     id: i64,
     name: Option<String>,
     description: Option<String>,
-    attribute: i64,
+    attribute_code: i64,
     alias: i64,
-    card_type: i64,
-    race: i64,
+    type_flags: i64,
+    race_code: i64,
     atk: i64,
     defense: i64,
     level: i64,
 }
 
-pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
-    ensure_ot_masks()?;
-    let lf_lists = read_lf_lists(Path::new(LFLIST))?;
+pub(crate) fn generate(options: GenerationOptions) -> Result<DatasetReport> {
+    ensure_ot_mappings()?;
+    let forbidden_lists = read_forbidden_lists(Path::new(FORBIDDEN_LIST_PATH))?;
     let mut images = ImageResolver::new(options)?;
-    let read_report = read_cards(Path::new(CARDS_DB), &lf_lists, &mut images)?;
-    let path = PathBuf::from(OUTPUT_JSON);
+    let collection = read_cards(Path::new(DATABASE_PATH), &forbidden_lists, &mut images)?;
+    let path = PathBuf::from(OUTPUT_PATH);
 
-    write_cards(&path, &read_report.cards)?;
+    write_dataset(&path, &collection.cards)?;
 
-    Ok(WriteReport {
-        label: "OT",
+    Ok(DatasetReport {
+        environment: Environment::Ot,
         path,
-        cards_written: read_report.cards.len(),
-        cards_skipped: read_report.cards_skipped,
+        cards_written: collection.cards.len(),
+        cards_skipped: collection.skipped,
         image_summary: images.summary(),
         image_failures: images.failures().to_vec(),
     })
 }
 
-struct ReadCardsReport {
-    cards: Vec<OtCard>,
-    cards_skipped: usize,
-}
-
 fn read_cards(
     db_path: &Path,
-    lf_lists: &LfLists,
+    forbidden_lists: &ForbiddenLists,
     images: &mut ImageResolver,
-) -> Result<ReadCardsReport> {
+) -> Result<CardCollection<Card>> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open cards database {}", db_path.display()))?;
     let total_rows = connection
@@ -120,14 +117,14 @@ fn read_cards(
         .context("failed to prepare OT card query")?;
     let rows = statement
         .query_map([], |row| {
-            Ok(CardRow {
+            Ok(DatabaseRow {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
-                attribute: row.get(3)?,
+                attribute_code: row.get(3)?,
                 alias: row.get(4)?,
-                card_type: row.get(5)?,
-                race: row.get(6)?,
+                type_flags: row.get(5)?,
+                race_code: row.get(6)?,
                 atk: row.get(7)?,
                 defense: row.get(8)?,
                 level: row.get(9)?,
@@ -140,7 +137,7 @@ fn read_cards(
     for (row_index, row) in rows.enumerate() {
         match row {
             Ok(row) => {
-                if let Some(card) = build_card(row, lf_lists, images) {
+                if let Some(card) = build_card(row, forbidden_lists, images) {
                     cards.push(card);
                 } else {
                     cards_skipped += 1;
@@ -148,23 +145,27 @@ fn read_cards(
             }
             Err(error) => {
                 cards_skipped += 1;
-                rejection::database_row("OT", row_index + 1, &error);
+                rejection::database_row(Environment::Ot, row_index + 1, &error);
             }
         }
         images.advance_progress();
     }
     images.finish_progress();
 
-    Ok(ReadCardsReport {
+    Ok(CardCollection {
         cards,
-        cards_skipped,
+        skipped: cards_skipped,
     })
 }
 
-fn build_card(row: CardRow, lf_lists: &LfLists, images: &mut ImageResolver) -> Option<OtCard> {
+fn build_card(
+    row: DatabaseRow,
+    forbidden_lists: &ForbiddenLists,
+    images: &mut ImageResolver,
+) -> Option<Card> {
     if row.id <= 0 {
         rejection::card(
-            "OT",
+            Environment::Ot,
             row.id,
             row.name.as_deref(),
             format_args!("ID must be positive"),
@@ -174,14 +175,14 @@ fn build_card(row: CardRow, lf_lists: &LfLists, images: &mut ImageResolver) -> O
 
     let Some(name) = row.name else {
         rejection::card(
-            "OT",
+            Environment::Ot,
             row.id,
             None,
             format_args!("name is missing from the texts table"),
         );
         return None;
     };
-    let rejection = rejection::Card::new("OT", row.id, &name);
+    let rejection = rejection::Card::new(Environment::Ot, row.id, &name);
 
     if name.trim().is_empty() {
         rejection.warning(format_args!("name is empty or whitespace-only"));
@@ -193,10 +194,10 @@ fn build_card(row: CardRow, lf_lists: &LfLists, images: &mut ImageResolver) -> O
         return None;
     };
 
-    let Some(attribute) = normalize_attribute(row.attribute) else {
+    let Some(attribute) = map_attribute(row.attribute_code) else {
         rejection.warning(format_args!(
             "unsupported attribute value={} ({:#x})",
-            row.attribute, row.attribute
+            row.attribute_code, row.attribute_code
         ));
         return None;
     };
@@ -209,10 +210,10 @@ fn build_card(row: CardRow, lf_lists: &LfLists, images: &mut ImageResolver) -> O
         return None;
     }
 
-    let Some(card_type) = parse_card_type(row.card_type, row.race) else {
+    let Some(card_type) = map_card_types(row.type_flags, row.race_code) else {
         rejection.warning(format_args!(
             "unsupported type or race bitmask; type={} ({:#x}) race={} ({:#x})",
-            row.card_type, row.card_type, row.race, row.race
+            row.type_flags, row.type_flags, row.race_code, row.race_code
         ));
         return None;
     };
@@ -272,7 +273,7 @@ fn build_card(row: CardRow, lf_lists: &LfLists, images: &mut ImageResolver) -> O
         ));
         return None;
     };
-    let Some(link_marker) = normalize_link_marker(row.defense, &card_type) else {
+    let Some(link_markers) = normalize_link_markers(row.defense, &card_type) else {
         rejection.warning(format_args!(
             "invalid link marker bitmask={} ({:#x}) for card_type={card_type:?}",
             row.defense, row.defense
@@ -280,9 +281,9 @@ fn build_card(row: CardRow, lf_lists: &LfLists, images: &mut ImageResolver) -> O
         return None;
     };
 
-    let image = images.resolve("OT", row.id, &name, row.alias)?;
+    let image = images.resolve(Environment::Ot, row.id, &name, row.alias)?;
 
-    Some(OtCard {
+    Some(Card {
         id: row.id,
         name,
         attribute,
@@ -291,14 +292,14 @@ fn build_card(row: CardRow, lf_lists: &LfLists, images: &mut ImageResolver) -> O
         pendulum_description,
         alias: row.alias,
         r#type: card_type,
-        lf: lf_lists.for_card(row.id, row.alias),
+        restrictions: forbidden_lists.for_card(row.id, row.alias),
         atk,
         def,
         level,
         rank,
         pendulum_scale,
         link_value,
-        link_marker,
+        link_markers,
     })
 }
 
@@ -312,7 +313,7 @@ mod tests {
 
     #[test]
     fn serializes_general_properties() {
-        let card = OtCard {
+        let card = Card {
             id: 89631139,
             name: String::from("Blue-Eyes White Dragon"),
             attribute: 1,
@@ -321,14 +322,14 @@ mod tests {
             pendulum_description: None,
             alias: 0,
             r#type: labels(&["怪兽", "龙族", "通常"]),
-            lf: vec![3, 1],
+            restrictions: vec![3, 1],
             atk: Some(3000),
             def: Some(2500),
             level: Some(8),
             rank: None,
             pendulum_scale: None,
             link_value: None,
-            link_marker: None,
+            link_markers: None,
         };
         let json = serde_json::to_string(&card).unwrap();
 

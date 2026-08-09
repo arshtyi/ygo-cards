@@ -1,0 +1,281 @@
+{
+  "attributeCodes": [
+    {
+      "rawCode": "0x00",
+      "outputValue": 0
+    },
+    {
+      "rawCode": "0x40",
+      "outputValue": 0
+    },
+    {
+      "rawCode": "0x10",
+      "outputValue": 1
+    },
+    {
+      "rawCode": "0x20",
+      "outputValue": 2
+    },
+    {
+      "rawCode": "0x08",
+      "outputValue": 3
+    },
+    {
+      "rawCode": "0x01",
+      "outputValue": 4
+    },
+    {
+      "rawCode": "0x04",
+      "outputValue": 5
+    },
+    {
+      "rawCode": "0x02",
+      "outputValue": 6
+    }
+  ],
+  "primaryTypeFlags": [
+    {
+      "mask": "0x1",
+      "outputName": "怪兽"
+    },
+    {
+      "mask": "0x2",
+      "outputName": "魔法"
+    },
+    {
+      "mask": "0x4",
+      "outputName": "陷阱"
+    }
+  ],
+  "subtypeFlags": [
+    {
+      "mask": "0x4000000",
+      "outputName": "连接"
+    },
+    {
+      "mask": "0x2000000",
+      "outputName": "特殊召唤"
+    },
+    {
+      "mask": "0x1000000",
+      "outputName": "灵摆"
+    },
+    {
+      "mask": "0x800000",
+      "outputName": "超量"
+    },
+    {
+      "mask": "0x400000",
+      "outputName": "卡通"
+    },
+    {
+      "mask": "0x200000",
+      "outputName": "反转"
+    },
+    {
+      "mask": "0x100000",
+      "outputName": "反击"
+    },
+    {
+      "mask": "0x80000",
+      "outputName": "场地"
+    },
+    {
+      "mask": "0x40000",
+      "outputName": "装备"
+    },
+    {
+      "mask": "0x20000",
+      "outputName": "永续"
+    },
+    {
+      "mask": "0x10000",
+      "outputName": "速攻"
+    },
+    {
+      "mask": "0x4000",
+      "outputName": "衍生物"
+    },
+    {
+      "mask": "0x2000",
+      "outputName": "同调"
+    },
+    {
+      "mask": "0x1000",
+      "outputName": "调整"
+    },
+    {
+      "mask": "0x800",
+      "outputName": "二重"
+    },
+    {
+      "mask": "0x400",
+      "outputName": "同盟"
+    },
+    {
+      "mask": "0x200",
+      "outputName": "灵魂"
+    },
+    {
+      "mask": "0x100",
+      "outputName": "陷阱怪兽"
+    },
+    {
+      "mask": "0x80",
+      "outputName": "仪式"
+    },
+    {
+      "mask": "0x40",
+      "outputName": "融合"
+    },
+    {
+      "mask": "0x20",
+      "outputName": "效果"
+    },
+    {
+      "mask": "0x10",
+      "outputName": "通常"
+    }
+  ],
+  "raceCodes": [
+    {
+      "rawCode": "0x1",
+      "outputName": "战士族"
+    },
+    {
+      "rawCode": "0x2",
+      "outputName": "魔法师族"
+    },
+    {
+      "rawCode": "0x4",
+      "outputName": "天使族"
+    },
+    {
+      "rawCode": "0x8",
+      "outputName": "恶魔族"
+    },
+    {
+      "rawCode": "0x10",
+      "outputName": "不死族"
+    },
+    {
+      "rawCode": "0x20",
+      "outputName": "机械族"
+    },
+    {
+      "rawCode": "0x40",
+      "outputName": "水族"
+    },
+    {
+      "rawCode": "0x80",
+      "outputName": "炎族"
+    },
+    {
+      "rawCode": "0x100",
+      "outputName": "岩石族"
+    },
+    {
+      "rawCode": "0x200",
+      "outputName": "鸟兽族"
+    },
+    {
+      "rawCode": "0x400",
+      "outputName": "植物族"
+    },
+    {
+      "rawCode": "0x800",
+      "outputName": "昆虫族"
+    },
+    {
+      "rawCode": "0x1000",
+      "outputName": "雷族"
+    },
+    {
+      "rawCode": "0x2000",
+      "outputName": "龙族"
+    },
+    {
+      "rawCode": "0x4000",
+      "outputName": "兽族"
+    },
+    {
+      "rawCode": "0x8000",
+      "outputName": "兽战士族"
+    },
+    {
+      "rawCode": "0x10000",
+      "outputName": "恐龙族"
+    },
+    {
+      "rawCode": "0x20000",
+      "outputName": "鱼族"
+    },
+    {
+      "rawCode": "0x40000",
+      "outputName": "海龙族"
+    },
+    {
+      "rawCode": "0x80000",
+      "outputName": "爬虫类族"
+    },
+    {
+      "rawCode": "0x100000",
+      "outputName": "念动力族"
+    },
+    {
+      "rawCode": "0x200000",
+      "outputName": "幻神兽族"
+    },
+    {
+      "rawCode": "0x400000",
+      "outputName": "创造神族"
+    },
+    {
+      "rawCode": "0x800000",
+      "outputName": "幻龙族"
+    },
+    {
+      "rawCode": "0x1000000",
+      "outputName": "电子界族"
+    },
+    {
+      "rawCode": "0x2000000",
+      "outputName": "幻想魔族"
+    }
+  ],
+  "linkMarkerFlags": [
+    {
+      "mask": "0x040",
+      "outputPosition": 0
+    },
+    {
+      "mask": "0x008",
+      "outputPosition": 1
+    },
+    {
+      "mask": "0x001",
+      "outputPosition": 2
+    },
+    {
+      "mask": "0x002",
+      "outputPosition": 3
+    },
+    {
+      "mask": "0x004",
+      "outputPosition": 4
+    },
+    {
+      "mask": "0x020",
+      "outputPosition": 5
+    },
+    {
+      "mask": "0x100",
+      "outputPosition": 6
+    },
+    {
+      "mask": "0x080",
+      "outputPosition": 7
+    }
+  ],
+  "inferredMonsterTypeMask": "0x4000"
+}

@@ -1,13 +1,13 @@
 {
-  "resources": {
+  "sourceResources": {
     "otCardsDatabase": "https://raw.githubusercontent.com/mycard/ygopro-database/master/locales/zh-CN/cards.cdb",
     "otForbiddenList": "https://code.moenext.com/mycard/ygopro/-/raw/master/lflist.conf",
     "rdCardsDatabase": "https://code.moenext.com/mycard/ygopro-rush-duel/-/raw/master/RD%20Standard.cdb",
     "rdForbiddenList": "https://code.moenext.com/mycard/ygopro-rush-duel/-/raw/master/lflist.conf"
   },
-  "latestJson": {
+  "publishedDatasets": {
     "ot": "https://github.com/arshtyi/ygo-cards/releases/latest/download/ot.json",
     "rd": "https://github.com/arshtyi/ygo-cards/releases/latest/download/rd.json"
   },
-  "imageBaseUrl": "https://images.ygoprodeck.com/images/cards_cropped"
+  "cardImageBaseUrl": "https://images.ygoprodeck.com/images/cards_cropped"
 }

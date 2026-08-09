@@ -1,6 +1,6 @@
-mod limits;
+mod classification;
 mod normalization;
-mod types;
+mod restrictions;
 
 use std::path::{Path, PathBuf};
 
@@ -9,24 +9,25 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use self::{
-    limits::{LfList, read_lf_list},
+    classification::{is_legend, map_attribute, map_card_types},
     normalization::{
-        monster_value, normalize_description, normalize_maximum, normalize_maximum_atk,
+        monster_stat, normalize_description, normalize_maximum, normalize_maximum_atk,
     },
-    types::{is_legend, normalize_attribute, parse_card_type},
+    restrictions::{ForbiddenList, read_forbidden_list},
 };
 use super::{
-    BuildOptions, WriteReport, images::ImageResolver, masks::ensure_rd_masks, rejection,
-    write_cards,
+    CardCollection, DatasetReport, GenerationOptions, images::ImageResolver,
+    mappings::ensure_rd_mappings, rejection, write_dataset,
 };
+use crate::environment::Environment;
 
-const CARDS_DB: &str = "assets/rd/rd_standard.cdb";
-const LFLIST: &str = "assets/rd/lflist.conf";
-const OUTPUT_JSON: &str = "output/rd.json";
-const USELESS_HEADER_ROWS: i64 = 4;
+const DATABASE_PATH: &str = "assets/rd/rd_standard.cdb";
+const FORBIDDEN_LIST_PATH: &str = "assets/rd/lflist.conf";
+const OUTPUT_PATH: &str = "output/rd.json";
+const NON_CARD_HEADER_ROWS: i64 = 4;
 
 #[derive(Debug, Serialize)]
-struct RdCard {
+struct Card {
     id: i64,
     name: String,
     attribute: i64,
@@ -34,7 +35,8 @@ struct RdCard {
     description: String,
     legend: bool,
     r#type: Vec<String>,
-    lf: i64,
+    #[serde(rename = "lf")]
+    restriction: i64,
     alias: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     atk: Option<i64>,
@@ -49,48 +51,43 @@ struct RdCard {
 }
 
 #[derive(Debug)]
-struct CardRow {
+struct DatabaseRow {
     id: i64,
     name: Option<String>,
     description: Option<String>,
-    attribute: i64,
-    card_type: i64,
-    race: i64,
+    attribute_code: i64,
+    type_flags: i64,
+    race_code: i64,
     alias: i64,
     atk: i64,
     defense: i64,
     level: i64,
 }
 
-pub fn write_json(options: BuildOptions) -> Result<WriteReport> {
-    ensure_rd_masks()?;
-    let lf_list = read_lf_list(Path::new(LFLIST))?;
+pub(crate) fn generate(options: GenerationOptions) -> Result<DatasetReport> {
+    ensure_rd_mappings()?;
+    let forbidden_list = read_forbidden_list(Path::new(FORBIDDEN_LIST_PATH))?;
     let mut images = ImageResolver::new(options)?;
-    let read_report = read_cards(Path::new(CARDS_DB), &lf_list, &mut images)?;
-    let path = PathBuf::from(OUTPUT_JSON);
+    let collection = read_cards(Path::new(DATABASE_PATH), &forbidden_list, &mut images)?;
+    let path = PathBuf::from(OUTPUT_PATH);
 
-    write_cards(&path, &read_report.cards)?;
+    write_dataset(&path, &collection.cards)?;
 
-    Ok(WriteReport {
-        label: "RD",
+    Ok(DatasetReport {
+        environment: Environment::Rd,
         path,
-        cards_written: read_report.cards.len(),
-        cards_skipped: read_report.cards_skipped,
+        cards_written: collection.cards.len(),
+        cards_skipped: collection.skipped,
         image_summary: images.summary(),
         image_failures: images.failures().to_vec(),
     })
 }
 
-struct ReadCardsReport {
-    cards: Vec<RdCard>,
-    cards_skipped: usize,
-}
-
 fn read_cards(
     db_path: &Path,
-    lf_list: &LfList,
+    forbidden_list: &ForbiddenList,
     images: &mut ImageResolver,
-) -> Result<ReadCardsReport> {
+) -> Result<CardCollection<Card>> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open RD cards database {}", db_path.display()))?;
     let total_rows = connection
@@ -105,7 +102,7 @@ fn read_cards(
                 select id from texts order by id limit ?1
             )
             ",
-            [USELESS_HEADER_ROWS],
+            [NON_CARD_HEADER_ROWS],
             |row| row.get::<_, i64>(0),
         )
         .context("failed to count RD card rows")? as usize;
@@ -128,14 +125,14 @@ fn read_cards(
         )
         .context("failed to prepare RD card query")?;
     let rows = statement
-        .query_map([USELESS_HEADER_ROWS], |row| {
-            Ok(CardRow {
+        .query_map([NON_CARD_HEADER_ROWS], |row| {
+            Ok(DatabaseRow {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
-                attribute: row.get(3)?,
-                card_type: row.get(4)?,
-                race: row.get(5)?,
+                attribute_code: row.get(3)?,
+                type_flags: row.get(4)?,
+                race_code: row.get(5)?,
                 alias: row.get(6)?,
                 atk: row.get(7)?,
                 defense: row.get(8)?,
@@ -149,7 +146,7 @@ fn read_cards(
     for (row_index, row) in rows.enumerate() {
         match row {
             Ok(row) => {
-                if let Some(card) = build_card(row, lf_list, images) {
+                if let Some(card) = build_card(row, forbidden_list, images) {
                     cards.push(card);
                 } else {
                     cards_skipped += 1;
@@ -157,23 +154,27 @@ fn read_cards(
             }
             Err(error) => {
                 cards_skipped += 1;
-                rejection::database_row("RD", row_index + 1, &error);
+                rejection::database_row(Environment::Rd, row_index + 1, &error);
             }
         }
         images.advance_progress();
     }
     images.finish_progress();
 
-    Ok(ReadCardsReport {
+    Ok(CardCollection {
         cards,
-        cards_skipped,
+        skipped: cards_skipped,
     })
 }
 
-fn build_card(row: CardRow, lf_list: &LfList, images: &mut ImageResolver) -> Option<RdCard> {
+fn build_card(
+    row: DatabaseRow,
+    forbidden_list: &ForbiddenList,
+    images: &mut ImageResolver,
+) -> Option<Card> {
     if row.id <= 0 {
         rejection::card(
-            "RD",
+            Environment::Rd,
             row.id,
             row.name.as_deref(),
             format_args!("ID must be positive"),
@@ -183,14 +184,14 @@ fn build_card(row: CardRow, lf_list: &LfList, images: &mut ImageResolver) -> Opt
 
     let Some(name) = row.name else {
         rejection::card(
-            "RD",
+            Environment::Rd,
             row.id,
             None,
             format_args!("name is missing from the texts table"),
         );
         return None;
     };
-    let rejection = rejection::Card::new("RD", row.id, &name);
+    let rejection = rejection::Card::new(Environment::Rd, row.id, &name);
 
     if name.trim().is_empty() {
         rejection.warning(format_args!("name is empty or whitespace-only"));
@@ -204,10 +205,10 @@ fn build_card(row: CardRow, lf_list: &LfList, images: &mut ImageResolver) -> Opt
 
     let description = normalize_description(raw_description);
 
-    let Some(attribute) = normalize_attribute(row.attribute) else {
+    let Some(attribute) = map_attribute(row.attribute_code) else {
         rejection.warning(format_args!(
             "unsupported attribute value={} ({:#x})",
-            row.attribute, row.attribute
+            row.attribute_code, row.attribute_code
         ));
         return None;
     };
@@ -220,17 +221,17 @@ fn build_card(row: CardRow, lf_list: &LfList, images: &mut ImageResolver) -> Opt
         return None;
     }
 
-    let Some(card_type) = parse_card_type(row.card_type, row.race) else {
+    let Some(card_type) = map_card_types(row.type_flags, row.race_code) else {
         rejection.warning(format_args!(
             "unsupported type or race bitmask; type={} ({:#x}) race={} ({:#x})",
-            row.card_type, row.card_type, row.race, row.race
+            row.type_flags, row.type_flags, row.race_code, row.race_code
         ));
         return None;
     };
 
-    let atk = monster_value(row.atk, &card_type);
-    let defense = monster_value(row.defense, &card_type);
-    let level = monster_value(row.level, &card_type);
+    let atk = monster_stat(row.atk, &card_type);
+    let defense = monster_stat(row.defense, &card_type);
+    let level = monster_stat(row.level, &card_type);
     let Some(maximum) = normalize_maximum(&name, &card_type, raw_description) else {
         rejection.warning(format_args!(
             "maximum position could not be normalized for card_type={card_type:?}"
@@ -243,17 +244,17 @@ fn build_card(row: CardRow, lf_list: &LfList, images: &mut ImageResolver) -> Opt
         ));
         return None;
     };
-    let image = images.resolve("RD", row.id, &name, row.alias)?;
+    let image = images.resolve(Environment::Rd, row.id, &name, row.alias)?;
 
-    Some(RdCard {
+    Some(Card {
         id: row.id,
         name,
         attribute,
         image,
         description,
-        legend: is_legend(row.card_type),
+        legend: is_legend(row.type_flags),
         r#type: card_type,
-        lf: lf_list.for_card(row.id, row.alias),
+        restriction: forbidden_list.for_card(row.id, row.alias),
         alias: row.alias,
         atk,
         def: defense,
@@ -273,7 +274,7 @@ mod tests {
 
     #[test]
     fn serializes_general_properties() {
-        let card = RdCard {
+        let card = Card {
             id: 120100001,
             name: String::from("大道魔法-爆发"),
             attribute: 0,
@@ -281,7 +282,7 @@ mod tests {
             description: String::from("【条件】\n无"),
             legend: false,
             r#type: labels(&["魔法"]),
-            lf: 3,
+            restriction: 3,
             alias: 0,
             atk: None,
             def: None,
@@ -299,7 +300,7 @@ mod tests {
 
     #[test]
     fn serializes_monster_stats() {
-        let card = RdCard {
+        let card = Card {
             id: 120105001,
             name: String::from("七星道魔术师"),
             attribute: 0,
@@ -307,7 +308,7 @@ mod tests {
             description: String::from("【条件】\n无"),
             legend: false,
             r#type: labels(&["怪兽", "魔法师族", "效果"]),
-            lf: 3,
+            restriction: 3,
             alias: 0,
             atk: Some(2100),
             def: Some(1500),
@@ -325,7 +326,7 @@ mod tests {
 
     #[test]
     fn serializes_maximum_monster_fields() {
-        let card = RdCard {
+        let card = Card {
             id: 120150002,
             name: String::from("超魔机神 大霸道王"),
             attribute: 1,
@@ -333,7 +334,7 @@ mod tests {
             description: String::from("可以和其他卡集齐作极大召唤。"),
             legend: false,
             r#type: labels(&["怪兽", "机械族", "极大", "效果"]),
-            lf: 3,
+            restriction: 3,
             alias: 0,
             atk: Some(1900),
             def: Some(0),
@@ -351,119 +352,119 @@ mod tests {
 
     #[test]
     fn rejects_invalid_rows() {
-        let lf_list = LfList::default();
-        let mut images = ImageResolver::new(BuildOptions::default()).unwrap();
+        let forbidden_list = ForbiddenList::default();
+        let mut images = ImageResolver::new(GenerationOptions::default()).unwrap();
 
         assert!(
             build_card(
-                CardRow {
+                DatabaseRow {
                     id: 0,
                     name: None,
                     description: None,
-                    attribute: 0,
-                    card_type: 0,
-                    race: 0,
+                    attribute_code: 0,
+                    type_flags: 0,
+                    race_code: 0,
                     alias: 0,
                     atk: 0,
                     defense: 0,
                     level: 0,
                 },
-                &lf_list,
+                &forbidden_list,
                 &mut images
             )
             .is_none()
         );
         assert!(
             build_card(
-                CardRow {
+                DatabaseRow {
                     id: 120100001,
                     name: None,
                     description: None,
-                    attribute: 0,
-                    card_type: 0,
-                    race: 0,
+                    attribute_code: 0,
+                    type_flags: 0,
+                    race_code: 0,
                     alias: 0,
                     atk: 0,
                     defense: 0,
                     level: 0,
                 },
-                &lf_list,
+                &forbidden_list,
                 &mut images
             )
             .is_none()
         );
         assert!(
             build_card(
-                CardRow {
+                DatabaseRow {
                     id: 120100001,
                     name: Some(String::from("  ")),
                     description: None,
-                    attribute: 0,
-                    card_type: 0,
-                    race: 0,
+                    attribute_code: 0,
+                    type_flags: 0,
+                    race_code: 0,
                     alias: 0,
                     atk: 0,
                     defense: 0,
                     level: 0,
                 },
-                &lf_list,
+                &forbidden_list,
                 &mut images
             )
             .is_none()
         );
         assert!(
             build_card(
-                CardRow {
+                DatabaseRow {
                     id: 120100001,
                     name: Some(String::from("大道魔法-爆发")),
                     description: Some(String::from("RD/SJMP-JP001\r\n【条件】")),
-                    attribute: 0x40,
-                    card_type: 0,
-                    race: 0,
+                    attribute_code: 0x40,
+                    type_flags: 0,
+                    race_code: 0,
                     alias: 0,
                     atk: 0,
                     defense: 0,
                     level: 0,
                 },
-                &lf_list,
+                &forbidden_list,
                 &mut images
             )
             .is_none()
         );
         assert!(
             build_card(
-                CardRow {
+                DatabaseRow {
                     id: 120100001,
                     name: Some(String::from("大道魔法-爆发")),
                     description: Some(String::from("RD/SJMP-JP001\r\n【条件】")),
-                    attribute: 0,
-                    card_type: 0,
-                    race: 0,
+                    attribute_code: 0,
+                    type_flags: 0,
+                    race_code: 0,
                     alias: -1,
                     atk: 0,
                     defense: 0,
                     level: 0,
                 },
-                &lf_list,
+                &forbidden_list,
                 &mut images
             )
             .is_none()
         );
         assert!(
             build_card(
-                CardRow {
+                DatabaseRow {
                     id: 120100001,
                     name: Some(String::from("大道魔法-爆发")),
                     description: None,
-                    attribute: 0,
-                    card_type: 0x2,
-                    race: 0,
+                    attribute_code: 0,
+                    type_flags: 0x2,
+                    race_code: 0,
                     alias: 0,
                     atk: 0,
                     defense: 0,
                     level: 0,
                 },
-                &lf_list,
+                &forbidden_list,
                 &mut images
             )
             .is_none()
@@ -472,22 +473,22 @@ mod tests {
 
     #[test]
     fn keeps_empty_descriptions() {
-        let lf_list = LfList::default();
-        let mut images = ImageResolver::new(BuildOptions::default()).unwrap();
+        let forbidden_list = ForbiddenList::default();
+        let mut images = ImageResolver::new(GenerationOptions::default()).unwrap();
         let card = build_card(
-            CardRow {
+            DatabaseRow {
                 id: 120287001,
                 name: Some(String::from("杰拉")),
                 description: Some(String::from("RD/AP01-JP001")),
-                attribute: 0x20,
-                card_type: 0x21,
-                race: 0x8,
+                attribute_code: 0x20,
+                type_flags: 0x21,
+                race_code: 0x8,
                 alias: 0,
                 atk: 2800,
                 defense: 2300,
                 level: 8,
             },
-            &lf_list,
+            &forbidden_list,
             &mut images,
         )
         .unwrap();

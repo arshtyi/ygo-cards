@@ -2,28 +2,28 @@ use std::{collections::HashMap, fs, path::Path};
 
 use anyhow::{Context, Result};
 
-use crate::cards::limit::{limit_for, parse_entry as parse_lf_entry};
+use crate::cards::restrictions::{parse_restriction, restriction_for};
 
 #[derive(Debug, Default)]
-pub(super) struct LfList {
+pub(super) struct ForbiddenList {
     entries: HashMap<i64, i64>,
 }
 
-impl LfList {
+impl ForbiddenList {
     pub(super) fn for_card(&self, id: i64, alias: i64) -> i64 {
-        limit_for(&self.entries, id, alias)
+        restriction_for(&self.entries, id, alias)
     }
 }
 
-pub(super) fn read_lf_list(path: &Path) -> Result<LfList> {
+pub(super) fn read_forbidden_list(path: &Path) -> Result<ForbiddenList> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("failed to read RD forbidden list {}", path.display()))?;
-    Ok(parse_lf_list(&text))
+    Ok(parse_forbidden_list(&text))
 }
 
-fn parse_lf_list(text: &str) -> LfList {
+fn parse_forbidden_list(text: &str) -> ForbiddenList {
     let mut entries = HashMap::new();
-    let mut section = LfSection::Other;
+    let mut section = Section::Other;
 
     for line in text.lines() {
         let line = line.trim();
@@ -32,7 +32,7 @@ fn parse_lf_list(text: &str) -> LfList {
         }
 
         if line.starts_with('#') {
-            section = LfSection::from_header(line);
+            section = Section::from_header(line);
             continue;
         }
 
@@ -40,21 +40,21 @@ fn parse_lf_list(text: &str) -> LfList {
             continue;
         }
 
-        if let Some((id, count)) = parse_lf_entry(line) {
+        if let Some((id, count)) = parse_restriction(line) {
             entries.insert(id, count);
         }
     }
 
-    LfList { entries }
+    ForbiddenList { entries }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LfSection {
+enum Section {
     Restriction,
     Other,
 }
 
-impl LfSection {
+impl Section {
     fn from_header(line: &str) -> Self {
         match line.trim_start_matches('#').to_ascii_lowercase().as_str() {
             "forbidden" | "limit" | "semi-limit" | "semi limit" => Self::Restriction,
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn parses_forbidden_list_restrictions() {
-        let list = parse_lf_list(
+        let list = parse_forbidden_list(
             "
             #[RD]
             !RD
@@ -102,19 +102,19 @@ mod tests {
     }
 
     #[test]
-    fn parses_lf_entry_lines() {
+    fn parses_restriction_lines() {
         assert_eq!(
-            parse_lf_entry("120226013 0 -- 业火之结界像"),
+            parse_restriction("120226013 0 -- 业火之结界像"),
             Some((120226013, 0))
         );
         assert_eq!(
-            parse_lf_entry("120217035 2 -- 革新制壶陶艺家"),
+            parse_restriction("120217035 2 -- 革新制壶陶艺家"),
             Some((120217035, 2))
         );
         assert_eq!(
-            parse_lf_entry("120102002 $legend_monster 1 -- 时间魔术师"),
+            parse_restriction("120102002 $legend_monster 1 -- 时间魔术师"),
             None
         );
-        assert_eq!(parse_lf_entry("120102002 4 --invalid"), None);
+        assert_eq!(parse_restriction("120102002 4 --invalid"), None);
     }
 }

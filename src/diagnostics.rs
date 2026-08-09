@@ -10,18 +10,18 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-pub const BUILD_LOG_PATH: &str = "output/build.log";
+pub(crate) const BUILD_LOG_PATH: &str = "output/build.log";
 
 static BUILD_LOG: OnceLock<Mutex<BuildLog>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Severity {
+pub(crate) enum Severity {
     Warning,
     Error,
 }
 
 impl Severity {
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Warning => "WARNING",
             Self::Error => "ERROR",
@@ -30,23 +30,23 @@ impl Severity {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiagnosticField {
+pub(crate) struct DiagnosticField {
     label: String,
     value: String,
 }
 
 impl DiagnosticField {
-    pub fn label(&self) -> &str {
+    pub(crate) fn label(&self) -> &str {
         &self.label
     }
 
-    pub fn value(&self) -> &str {
+    pub(crate) fn value(&self) -> &str {
         &self.value
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Diagnostic {
+pub(crate) struct Diagnostic {
     severity: Severity,
     code: &'static str,
     title: String,
@@ -56,11 +56,11 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    pub fn warning(code: &'static str, title: impl Into<String>) -> Self {
+    pub(crate) fn warning(code: &'static str, title: impl Into<String>) -> Self {
         Self::new(Severity::Warning, code, title)
     }
 
-    pub fn error(code: &'static str, title: impl Into<String>) -> Self {
+    pub(crate) fn error(code: &'static str, title: impl Into<String>) -> Self {
         Self::new(Severity::Error, code, title)
     }
 
@@ -75,7 +75,7 @@ impl Diagnostic {
         }
     }
 
-    pub fn context(mut self, label: impl Into<String>, value: impl fmt::Display) -> Self {
+    pub(crate) fn context(mut self, label: impl Into<String>, value: impl fmt::Display) -> Self {
         self.context.push(DiagnosticField {
             label: label.into(),
             value: value.to_string(),
@@ -83,50 +83,51 @@ impl Diagnostic {
         self
     }
 
-    pub fn reason(mut self, reason: impl fmt::Display) -> Self {
+    pub(crate) fn reason(mut self, reason: impl fmt::Display) -> Self {
         self.reason = Some(reason.to_string());
         self
     }
 
-    pub fn suggestion(mut self, suggestion: impl fmt::Display) -> Self {
+    pub(crate) fn suggestion(mut self, suggestion: impl fmt::Display) -> Self {
         self.suggestion = Some(suggestion.to_string());
         self
     }
 
-    pub fn severity(&self) -> Severity {
+    pub(crate) fn severity(&self) -> Severity {
         self.severity
     }
 
-    pub fn code(&self) -> &str {
+    pub(crate) fn code(&self) -> &str {
         self.code
     }
 
-    pub fn title(&self) -> &str {
+    pub(crate) fn title(&self) -> &str {
         &self.title
     }
 
-    pub fn fields(&self) -> &[DiagnosticField] {
+    pub(crate) fn fields(&self) -> &[DiagnosticField] {
         &self.context
     }
 
-    pub fn reason_text(&self) -> Option<&str> {
+    pub(crate) fn reason_text(&self) -> Option<&str> {
         self.reason.as_deref()
     }
 
-    pub fn suggestion_text(&self) -> Option<&str> {
+    pub(crate) fn suggestion_text(&self) -> Option<&str> {
         self.suggestion.as_deref()
     }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct DiagnosticSnapshot {
+pub(crate) struct DiagnosticSnapshot {
     records: Vec<Diagnostic>,
     warnings: usize,
     errors: usize,
 }
 
 impl DiagnosticSnapshot {
-    pub fn from_records(records: Vec<Diagnostic>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_records(records: Vec<Diagnostic>) -> Self {
         let warnings = records
             .iter()
             .filter(|diagnostic| diagnostic.severity == Severity::Warning)
@@ -139,19 +140,19 @@ impl DiagnosticSnapshot {
         }
     }
 
-    pub fn records(&self) -> &[Diagnostic] {
+    pub(crate) fn records(&self) -> &[Diagnostic] {
         &self.records
     }
 
-    pub fn warnings(&self) -> usize {
+    pub(crate) fn warnings(&self) -> usize {
         self.warnings
     }
 
-    pub fn errors(&self) -> usize {
+    pub(crate) fn errors(&self) -> usize {
         self.errors
     }
 
-    pub fn is_clean(&self) -> bool {
+    pub(crate) fn is_clean(&self) -> bool {
         self.records.is_empty()
     }
 }
@@ -346,7 +347,7 @@ fn write_summary(writer: &mut impl Write, warnings: usize, errors: usize) -> io:
     writeln!(writer, "Errors   : {errors}")
 }
 
-pub fn init() -> Result<PathBuf> {
+pub(crate) fn init() -> Result<PathBuf> {
     if BUILD_LOG.get().is_some() {
         bail!("build log has already been initialized");
     }
@@ -359,7 +360,7 @@ pub fn init() -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn record(diagnostic: Diagnostic) {
+pub(crate) fn record(diagnostic: Diagnostic) {
     let Some(log) = BUILD_LOG.get() else {
         return;
     };
@@ -369,7 +370,7 @@ pub fn record(diagnostic: Diagnostic) {
     log.record(diagnostic);
 }
 
-pub fn snapshot() -> Result<DiagnosticSnapshot> {
+pub(crate) fn snapshot() -> Result<DiagnosticSnapshot> {
     let Some(log) = BUILD_LOG.get() else {
         return Ok(DiagnosticSnapshot::default());
     };
@@ -379,7 +380,7 @@ pub fn snapshot() -> Result<DiagnosticSnapshot> {
     Ok(log.snapshot())
 }
 
-pub fn install_panic_hook() {
+pub(crate) fn install_panic_hook() {
     std::panic::set_hook(Box::new(|panic_info| {
         let message = panic_message(panic_info.payload());
         let backtrace = Backtrace::capture();
@@ -436,7 +437,7 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| String::from("panic payload was not a string"))
 }
 
-pub fn finish() -> Result<()> {
+pub(crate) fn finish() -> Result<()> {
     let Some(log) = BUILD_LOG.get() else {
         return Ok(());
     };

@@ -5,17 +5,17 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use ygo_cards::{
-    cards::{FailedImageCheck, ImageFailure, WriteReport},
-    diagnostics::{Diagnostic, DiagnosticSnapshot, Severity},
-};
 
-use crate::latest::{LatestComparisonReport, LatestComparisonStatus};
+use crate::{
+    cards::{DatasetReport, FailedImageCheck, ImageCheckFailure},
+    diagnostics::{Diagnostic, DiagnosticSnapshot, Severity},
+    latest::{LatestComparisonReport, LatestComparisonStatus},
+};
 
 use super::{ReportTotals, format_count, image_failure_action, plural};
 
 pub(crate) fn write_summary_report(
-    reports: &[&WriteReport],
+    reports: &[&DatasetReport],
     latest_comparisons: &[LatestComparisonReport],
     diagnostics: &DiagnosticSnapshot,
     path: &Path,
@@ -31,7 +31,7 @@ pub(crate) fn write_summary_report(
 }
 
 fn build_summary_report(
-    reports: &[&WriteReport],
+    reports: &[&DatasetReport],
     latest_comparisons: &[LatestComparisonReport],
     diagnostics: &DiagnosticSnapshot,
 ) -> String {
@@ -75,7 +75,7 @@ fn append_build_note(report: &mut String, datasets: usize, totals: &ReportTotals
 
 fn append_overview(
     report: &mut String,
-    reports: &[&WriteReport],
+    reports: &[&DatasetReport],
     latest_comparisons: &[LatestComparisonReport],
     totals: &ReportTotals,
 ) {
@@ -85,12 +85,12 @@ fn append_overview(
     for environment_report in reports {
         let latest = latest_comparisons
             .iter()
-            .find(|comparison| comparison.label == environment_report.label)
+            .find(|comparison| comparison.environment == environment_report.environment)
             .map(latest_overview_value)
             .unwrap_or_else(|| String::from("Not checked"));
         report.push_str(&format!(
             "| **{}** | {} | {} | {} | `{}` |\n",
-            escape_markdown_cell(environment_report.label),
+            escape_markdown_cell(environment_report.environment.label()),
             format_count(environment_report.cards_written),
             format_count(environment_report.cards_skipped),
             latest,
@@ -151,14 +151,14 @@ fn append_latest_comparison_report(
     for comparison in latest_comparisons {
         report.push_str(&format!(
             "### {}\n\n",
-            escape_markdown_cell(comparison.label)
+            escape_markdown_cell(comparison.environment.label())
         ));
 
         match &comparison.status {
             LatestComparisonStatus::Compared { previous_cards } => {
                 report.push_str(&format!(
                     "Compared with the [latest {} dataset]({}): **{} → {} cards**, with **{} new**.\n\n",
-                    escape_markdown_cell(comparison.label),
+                    escape_markdown_cell(comparison.environment.label()),
                     escape_markdown_url(&comparison.latest_url),
                     format_count(*previous_cards),
                     format_count(comparison.current_cards),
@@ -173,7 +173,7 @@ fn append_latest_comparison_report(
                         &format!(
                             "View {} new {} {}",
                             format_count(comparison.added_cards.len()),
-                            comparison.label,
+                            comparison.environment,
                             plural(comparison.added_cards.len(), "card", "cards")
                         ),
                     );
@@ -205,7 +205,7 @@ fn append_latest_comparison_report(
     }
 }
 
-fn append_image_report(report: &mut String, reports: &[&WriteReport], totals: &ReportTotals) {
+fn append_image_report(report: &mut String, reports: &[&DatasetReport], totals: &ReportTotals) {
     report.push_str("## Image Validation\n\n");
     if !totals.images.enabled {
         report.push_str("Image validation was disabled. Card IDs were used as image IDs.\n\n");
@@ -220,7 +220,7 @@ fn append_image_report(report: &mut String, reports: &[&WriteReport], totals: &R
         let images = environment_report.image_summary;
         report.push_str(&format!(
             "| **{}** | {} | {} | {} | {} | {} | {} |\n",
-            escape_markdown_cell(environment_report.label),
+            escape_markdown_cell(environment_report.environment.label()),
             format_count(images.cards_checked),
             format_count(images.successful_cards()),
             format_count(environment_report.image_failures.len()),
@@ -251,7 +251,7 @@ fn append_image_report(report: &mut String, reports: &[&WriteReport], totals: &R
         let images = environment_report.image_summary;
         report.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} |\n",
-            escape_markdown_cell(environment_report.label),
+            escape_markdown_cell(environment_report.environment.label()),
             format_count(images.primary_found),
             format_count(images.alias_found),
             format_count(images.unique_urls_found),
@@ -264,7 +264,7 @@ fn append_image_report(report: &mut String, reports: &[&WriteReport], totals: &R
     append_image_failures(report, reports);
 }
 
-fn append_image_failures(report: &mut String, reports: &[&WriteReport]) {
+fn append_image_failures(report: &mut String, reports: &[&DatasetReport]) {
     let failures = reports
         .iter()
         .flat_map(|environment_report| environment_report.image_failures.iter())
@@ -321,7 +321,7 @@ fn append_image_failures(report: &mut String, reports: &[&WriteReport]) {
 
 fn append_failed_image_check(
     report: &mut String,
-    failure: &ImageFailure,
+    failure: &ImageCheckFailure,
     candidate: &str,
     check: &FailedImageCheck,
 ) {
@@ -511,8 +511,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::latest::CardSummary;
-    use ygo_cards::{cards::ImageSummary, diagnostics::Diagnostic};
+    use crate::{
+        cards::ImageCheckSummary, diagnostics::Diagnostic, environment::Environment,
+        latest::CardSummary,
+    };
 
     fn card(id: i64, name: &str, card_type: &[&str]) -> CardSummary {
         CardSummary {
@@ -522,23 +524,23 @@ mod tests {
         }
     }
 
-    fn report_with_image_failure() -> WriteReport {
-        WriteReport {
-            label: "OT",
+    fn report_with_image_failure() -> DatasetReport {
+        DatasetReport {
+            environment: Environment::Ot,
             path: PathBuf::from("output/ot.json"),
             cards_written: 9,
             cards_skipped: 1,
-            image_summary: ImageSummary {
+            image_summary: ImageCheckSummary {
                 enabled: true,
                 skip_failures: true,
                 cards_checked: 10,
                 primary_found: 9,
                 missing: 1,
                 cards_skipped: 1,
-                ..ImageSummary::default()
+                ..ImageCheckSummary::default()
             },
-            image_failures: vec![ImageFailure {
-                environment: "OT",
+            image_failures: vec![ImageCheckFailure {
+                environment: Environment::Ot,
                 id: 1,
                 name: String::from("Missing | <Image>"),
                 alias: 2,
@@ -571,7 +573,7 @@ mod tests {
     fn puts_release_changes_before_operational_details() {
         let environment_report = report_with_image_failure();
         let comparisons = [LatestComparisonReport {
-            label: "OT",
+            environment: Environment::Ot,
             latest_url: String::from("https://example.test/latest/ot.json"),
             current_cards: 9,
             status: LatestComparisonStatus::Compared { previous_cards: 8 },
@@ -600,7 +602,7 @@ mod tests {
     fn labels_the_total_unavailable_when_no_comparison_succeeded() {
         let ot_report = report_with_image_failure();
         let mut rd_report = report_with_image_failure();
-        rd_report.label = "RD";
+        rd_report.environment = Environment::Rd;
         rd_report.path = PathBuf::from("output/rd.json");
         rd_report.cards_written = 3;
         rd_report.cards_skipped = 0;

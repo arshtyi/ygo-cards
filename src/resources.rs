@@ -15,8 +15,8 @@ use reqwest::{
 
 use crate::{
     diagnostics::{self, Diagnostic},
+    endpoints::{self, Endpoints, SourceResource},
     http::{backoff_delay, is_retryable_status},
-    urls::{self, ResourceUrlKey, UrlConfig},
 };
 
 const ASSETS_DIR: &str = "assets";
@@ -26,22 +26,22 @@ const RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
 const RESOURCE_DEFINITIONS: &[ResourceDefinition] = &[
     ResourceDefinition {
         name: "ot cards database",
-        url: ResourceUrlKey::OtCardsDatabase,
+        source: SourceResource::OtCardsDatabase,
         path: &["ot", "cards.cdb"],
     },
     ResourceDefinition {
         name: "ot forbidden list",
-        url: ResourceUrlKey::OtForbiddenList,
+        source: SourceResource::OtForbiddenList,
         path: &["ot", "lflist.conf"],
     },
     ResourceDefinition {
         name: "rd cards database",
-        url: ResourceUrlKey::RdCardsDatabase,
+        source: SourceResource::RdCardsDatabase,
         path: &["rd", "rd_standard.cdb"],
     },
     ResourceDefinition {
         name: "rd forbidden list",
-        url: ResourceUrlKey::RdForbiddenList,
+        source: SourceResource::RdForbiddenList,
         path: &["rd", "lflist.conf"],
     },
 ];
@@ -49,15 +49,15 @@ const RESOURCE_DEFINITIONS: &[ResourceDefinition] = &[
 #[derive(Debug)]
 struct ResourceDefinition {
     name: &'static str,
-    url: ResourceUrlKey,
+    source: SourceResource,
     path: &'static [&'static str],
 }
 
 impl ResourceDefinition {
-    fn to_resource<'a>(&'a self, config: &'a UrlConfig) -> Resource<'a> {
+    fn resolve<'a>(&'a self, endpoints: &'a Endpoints) -> Resource<'a> {
         Resource {
             name: self.name,
-            url: config.resource_url(self.url),
+            url: endpoints.source_url(self.source),
             path: self.path,
         }
     }
@@ -71,31 +71,31 @@ struct Resource<'a> {
 }
 
 #[derive(Debug)]
-pub struct DownloadedResource {
-    pub path: PathBuf,
-    pub bytes: u64,
-    pub attempts: u32,
+pub(crate) struct DownloadedResource {
+    pub(crate) path: PathBuf,
+    pub(crate) bytes: u64,
+    pub(crate) attempts: u32,
 }
 
-pub fn download_all() -> Result<Vec<DownloadedResource>> {
-    let url_config = urls::urls()?;
+pub(crate) fn download_all() -> Result<Vec<DownloadedResource>> {
+    let endpoints = endpoints::endpoints()?;
     let client = resource_client()?;
 
     RESOURCE_DEFINITIONS
         .iter()
         .map(|definition| {
-            let resource = definition.to_resource(url_config);
+            let resource = definition.resolve(endpoints);
             download_resource(&client, &resource)
         })
         .collect()
 }
 
-pub fn ensure_all() -> Result<()> {
-    let url_config = urls::urls()?;
+pub(crate) fn ensure_all() -> Result<()> {
+    let endpoints = endpoints::endpoints()?;
     let client = resource_client()?;
 
     for definition in RESOURCE_DEFINITIONS {
-        let resource = definition.to_resource(url_config);
+        let resource = definition.resolve(endpoints);
         if validate_asset(&asset_path(&resource)).is_ok() {
             continue;
         }

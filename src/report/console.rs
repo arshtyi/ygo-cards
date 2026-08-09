@@ -1,18 +1,19 @@
 use std::fmt::Write;
 
-use ygo_cards::cards::{ImageSummary, WriteReport};
-
-use crate::latest::{LatestComparisonReport, LatestComparisonStatus};
+use crate::{
+    cards::{DatasetReport, ImageCheckSummary},
+    latest::{LatestComparisonReport, LatestComparisonStatus},
+};
 
 use super::{ReportTotals, format_count, image_failure_action, plural};
 
-pub(crate) fn print_write_report(report: &WriteReport) {
-    println!("\n{}", render_write_report(report));
+pub(crate) fn print_dataset_report(report: &DatasetReport) {
+    println!("\n{}", render_dataset_report(report));
 }
 
-fn render_write_report(report: &WriteReport) -> String {
+fn render_dataset_report(report: &DatasetReport) -> String {
     let mut output = String::new();
-    let _ = writeln!(output, "{} dataset", report.label);
+    let _ = writeln!(output, "{} dataset", report.environment);
     let _ = writeln!(output, "  {:<16} {}", "Output", report.path.display());
     let _ = writeln!(
         output,
@@ -25,7 +26,7 @@ fn render_write_report(report: &WriteReport) -> String {
     output.trim_end().to_string()
 }
 
-fn append_image_summary(output: &mut String, summary: ImageSummary) {
+fn append_image_summary(output: &mut String, summary: ImageCheckSummary) {
     if !summary.enabled {
         return;
     }
@@ -73,14 +74,14 @@ fn append_image_summary(output: &mut String, summary: ImageSummary) {
 }
 
 pub(crate) fn print_summary_report(
-    reports: &[&WriteReport],
+    reports: &[&DatasetReport],
     latest_comparisons: &[LatestComparisonReport],
 ) {
     println!("\n{}", render_summary_report(reports, latest_comparisons));
 }
 
 fn render_summary_report(
-    reports: &[&WriteReport],
+    reports: &[&DatasetReport],
     latest_comparisons: &[LatestComparisonReport],
 ) -> String {
     let totals = ReportTotals::from_reports(reports);
@@ -108,7 +109,7 @@ fn render_summary_report(
         let _ = writeln!(output, "  New since latest");
         let width = latest_comparisons
             .iter()
-            .map(|comparison| comparison.label.len())
+            .map(|comparison| comparison.environment.label().len())
             .max()
             .unwrap_or_default();
         for comparison in latest_comparisons {
@@ -117,7 +118,7 @@ fn render_summary_report(
                     let _ = writeln!(
                         output,
                         "    {:<width$}  {} new ({} -> {} cards)",
-                        comparison.label,
+                        comparison.environment,
                         format_count(comparison.added_cards.len()),
                         format_count(*previous_cards),
                         format_count(comparison.current_cards)
@@ -127,14 +128,14 @@ fn render_summary_report(
                     let _ = writeln!(
                         output,
                         "    {:<width$}  unavailable (no previous release)",
-                        comparison.label
+                        comparison.environment
                     );
                 }
                 LatestComparisonStatus::Unavailable(_) => {
                     let _ = writeln!(
                         output,
                         "    {:<width$}  unavailable (see diagnostics)",
-                        comparison.label
+                        comparison.environment
                     );
                 }
             }
@@ -148,18 +149,18 @@ fn render_summary_report(
 mod tests {
     use std::path::PathBuf;
 
-    use ygo_cards::cards::ImageSummary;
+    use crate::environment::Environment;
 
     use super::*;
 
     #[test]
     fn renders_dataset_as_scannable_sections() {
-        let report = WriteReport {
-            label: "OT",
+        let report = DatasetReport {
+            environment: Environment::Ot,
             path: PathBuf::from("output/ot.json"),
             cards_written: 14_947,
             cards_skipped: 1,
-            image_summary: ImageSummary {
+            image_summary: ImageCheckSummary {
                 enabled: true,
                 cards_checked: 11,
                 primary_found: 9,
@@ -175,7 +176,7 @@ mod tests {
             image_failures: Vec::new(),
         };
 
-        let output = render_write_report(&report);
+        let output = render_dataset_report(&report);
 
         assert!(output.starts_with("OT dataset\n"));
         assert!(output.contains("Cards            14,947 written, 1 skipped"));

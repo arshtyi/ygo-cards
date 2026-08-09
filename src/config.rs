@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 
-pub(crate) fn read_json<T>(relative_path: &str, description: &str) -> Result<T>
+pub(crate) fn read_json_config<T>(relative_path: &str, description: &str) -> Result<T>
 where
     T: DeserializeOwned,
 {
@@ -23,12 +23,12 @@ mod tests {
     #[derive(Debug, Deserialize, PartialEq, Eq)]
     #[serde(rename_all = "camelCase")]
     struct Fixture {
-        image_base_url: String,
+        card_image_base_url: String,
     }
 
     #[test]
     fn reads_json_relative_to_manifest() {
-        let fixture: Fixture = read_json("config/urls.json", "test config").unwrap();
-        assert!(fixture.image_base_url.starts_with("https://"));
+        let fixture: Fixture = read_json_config("config/endpoints.json", "test config").unwrap();
+        assert!(fixture.card_image_base_url.starts_with("https://"));
     }
 }

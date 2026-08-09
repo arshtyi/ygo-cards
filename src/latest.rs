@@ -3,15 +3,18 @@ use std::{collections::HashSet, fs, path::Path, time::Duration};
 use anyhow::{Context, Result};
 use reqwest::StatusCode;
 use serde::Deserialize;
-use ygo_cards::{
-    cards::WriteReport,
+
+use crate::{
+    cards::DatasetReport,
     diagnostics::{self, Diagnostic},
+    endpoints::{self, Endpoints},
+    environment::Environment,
 };
 
 pub(crate) fn compare_latest_release(
-    reports: &[&WriteReport],
+    reports: &[&DatasetReport],
 ) -> Result<Vec<LatestComparisonReport>> {
-    let url_config = ygo_cards::urls::urls()?;
+    let endpoints = endpoints::endpoints()?;
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
@@ -24,18 +27,20 @@ pub(crate) fn compare_latest_release(
 
     reports
         .iter()
-        .map(|report| compare_latest_release_file(&client, url_config, report))
+        .map(|report| compare_latest_release_file(&client, endpoints, report))
         .collect()
 }
 
 fn compare_latest_release_file(
     client: &reqwest::blocking::Client,
-    url_config: &ygo_cards::urls::UrlConfig,
-    report: &WriteReport,
+    endpoints: &Endpoints,
+    report: &DatasetReport,
 ) -> Result<LatestComparisonReport> {
-    let latest_url = url_config.latest_json_url(report.label)?.to_string();
+    let latest_url = endpoints
+        .published_dataset_url(report.environment)
+        .to_string();
     let current_cards = read_card_summaries(&report.path)
-        .with_context(|| format!("failed to read current {} cards", report.label))?;
+        .with_context(|| format!("failed to read current {} cards", report.environment))?;
 
     let (status, added_cards) = match fetch_latest_card_summaries(client, &latest_url) {
         LatestCardsFetch::Cards(previous_cards) => {
@@ -53,7 +58,7 @@ fn compare_latest_release_file(
                     "release.comparison-skipped",
                     "Latest-release comparison was skipped",
                 )
-                .context("Environment", report.label)
+                .context("Environment", report.environment)
                 .context("URL", &latest_url)
                 .reason("HTTP 404 Not Found")
                 .suggestion("This is expected before the first published release"),
@@ -66,7 +71,7 @@ fn compare_latest_release_file(
                     "release.comparison-skipped",
                     "Latest-release comparison was skipped",
                 )
-                .context("Environment", report.label)
+                .context("Environment", report.environment)
                 .context("URL", &latest_url)
                 .reason(&reason)
                 .suggestion(
@@ -78,7 +83,7 @@ fn compare_latest_release_file(
     };
 
     Ok(LatestComparisonReport {
-        label: report.label,
+        environment: report.environment,
         latest_url,
         current_cards: current_cards.len(),
         status,
@@ -147,7 +152,7 @@ fn find_added_cards(
 
 #[derive(Debug)]
 pub(crate) struct LatestComparisonReport {
-    pub(crate) label: &'static str,
+    pub(crate) environment: Environment,
     pub(crate) latest_url: String,
     pub(crate) current_cards: usize,
     pub(crate) status: LatestComparisonStatus,
