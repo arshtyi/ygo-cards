@@ -8,7 +8,7 @@ The tool downloads upstream YGOPro-compatible resources, normalizes card records
 
 - `output/ot.json`: normalized OT card data.
 - `output/rd.json`: normalized RD card data.
-- `output/report.md`: release-ready Markdown with an at-a-glance dataset summary, new cards since the current `latest` release, image validation, and grouped build diagnostics.
+- `output/report.md`: release-ready Markdown with an at-a-glance dataset summary, new cards since the previous release, image validation, and grouped build diagnostics.
 - `output/build.log`: numbered, structured warning and error records with aligned context, reasons, suggestions, and final severity totals.
 
 ## Field Definitions

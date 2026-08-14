@@ -12,6 +12,7 @@ const ENDPOINTS_PATH: &str = "config/endpoints.json";
 pub(crate) struct Endpoints {
     source_resources: SourceResourceUrls,
     published_datasets: PublishedDatasetUrls,
+    latest_release: String,
     card_image_base_url: String,
 }
 
@@ -64,6 +65,10 @@ impl Endpoints {
         }
     }
 
+    pub(crate) fn latest_release_url(&self) -> &str {
+        &self.latest_release
+    }
+
     pub(crate) fn card_image_base_url(&self) -> &str {
         &self.card_image_base_url
     }
@@ -87,6 +92,7 @@ impl Endpoints {
         )?;
         validate_url("publishedDatasets.ot", &self.published_datasets.ot)?;
         validate_url("publishedDatasets.rd", &self.published_datasets.rd)?;
+        validate_url("latestRelease", &self.latest_release)?;
         validate_url("cardImageBaseUrl", &self.card_image_base_url)?;
         Ok(())
     }
@@ -130,6 +136,7 @@ mod tests {
                 .published_dataset_url(Environment::Rd)
                 .ends_with("/rd.json")
         );
+        assert!(config.latest_release_url().ends_with("/releases/latest"));
         assert!(config.card_image_base_url().starts_with("https://"));
     }
 

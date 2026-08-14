@@ -13,7 +13,7 @@ use crate::{
 
 pub(crate) fn compare_latest_release(
     reports: &[&DatasetReport],
-) -> Result<Vec<LatestComparisonReport>> {
+) -> Result<LatestReleaseComparison> {
     let endpoints = endpoints::endpoints()?;
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!(
@@ -25,10 +25,17 @@ pub(crate) fn compare_latest_release(
         .build()
         .context("failed to build latest release HTTP client")?;
 
-    reports
+    let datasets = reports
         .iter()
         .map(|report| compare_latest_release_file(&client, endpoints, report))
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    let release = datasets
+        .iter()
+        .any(|comparison| matches!(comparison.status, LatestComparisonStatus::Compared { .. }))
+        .then(|| resolve_latest_release(&client, endpoints.latest_release_url()))
+        .flatten();
+
+    Ok(LatestReleaseComparison { release, datasets })
 }
 
 fn compare_latest_release_file(
@@ -84,11 +91,65 @@ fn compare_latest_release_file(
 
     Ok(LatestComparisonReport {
         environment: report.environment,
-        latest_url,
         current_cards: current_cards.len(),
         status,
         added_cards,
     })
+}
+
+fn resolve_latest_release(
+    client: &reqwest::blocking::Client,
+    latest_release_url: &str,
+) -> Option<ReleaseReference> {
+    let response = match client.head(latest_release_url).send() {
+        Ok(response) => response,
+        Err(error) => {
+            record_release_reference_warning(
+                latest_release_url,
+                format!("request failed: {:#}", anyhow::Error::new(error)),
+            );
+            return None;
+        }
+    };
+
+    if !response.status().is_success() {
+        record_release_reference_warning(latest_release_url, format!("HTTP {}", response.status()));
+        return None;
+    }
+
+    let mut url = response.url().clone();
+    let Some(tag) = release_tag_from_path(url.path()) else {
+        record_release_reference_warning(
+            latest_release_url,
+            format!("redirect resolved to an unexpected URL: {url}"),
+        );
+        return None;
+    };
+    let tag = tag.to_string();
+    url.set_query(None);
+    url.set_fragment(None);
+
+    Some(ReleaseReference {
+        tag,
+        url: url.to_string(),
+    })
+}
+
+fn release_tag_from_path(path: &str) -> Option<&str> {
+    let (_, tag) = path.split_once("/releases/tag/")?;
+    (!tag.is_empty()).then_some(tag)
+}
+
+fn record_release_reference_warning(url: &str, reason: String) {
+    diagnostics::record(
+        Diagnostic::warning(
+            "release.reference-unavailable",
+            "Previous-release link could not be resolved",
+        )
+        .context("URL", url)
+        .reason(reason)
+        .suggestion("The dataset comparison is still valid, but the report will omit the link"),
+    );
 }
 
 fn fetch_latest_card_summaries(client: &reqwest::blocking::Client, url: &str) -> LatestCardsFetch {
@@ -151,9 +212,20 @@ fn find_added_cards(
 }
 
 #[derive(Debug)]
+pub(crate) struct LatestReleaseComparison {
+    pub(crate) release: Option<ReleaseReference>,
+    pub(crate) datasets: Vec<LatestComparisonReport>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ReleaseReference {
+    pub(crate) tag: String,
+    pub(crate) url: String,
+}
+
+#[derive(Debug)]
 pub(crate) struct LatestComparisonReport {
     pub(crate) environment: Environment,
-    pub(crate) latest_url: String,
     pub(crate) current_cards: usize,
     pub(crate) status: LatestComparisonStatus,
     pub(crate) added_cards: Vec<CardSummary>,
@@ -226,6 +298,18 @@ mod tests {
         assert_eq!(
             find_added_cards(&current_cards, &previous_cards),
             vec![card(2, "New", &["怪兽", "龙族", "通常"])]
+        );
+    }
+
+    #[test]
+    fn extracts_release_tag_from_resolved_github_path() {
+        assert_eq!(
+            release_tag_from_path("/arshtyi/ygo-cards/releases/tag/0.0.2"),
+            Some("0.0.2")
+        );
+        assert_eq!(
+            release_tag_from_path("/arshtyi/ygo-cards/releases/latest"),
+            None
         );
     }
 }

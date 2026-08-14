@@ -125,7 +125,7 @@ fn generate(options: Options) -> Result<()> {
     print_dataset_report(&rd_report);
 
     let reports = [&ot_report, &rd_report];
-    let latest_comparisons = compare_latest_release(&reports)?;
+    let latest_comparison = compare_latest_release(&reports)?;
     let diagnostic_snapshot = diagnostics::snapshot()?;
     anyhow::ensure!(
         diagnostic_snapshot.errors() == 0,
@@ -134,11 +134,11 @@ fn generate(options: Options) -> Result<()> {
     );
     write_summary_report(
         &reports,
-        &latest_comparisons,
+        &latest_comparison,
         &diagnostic_snapshot,
         Path::new(SUMMARY_REPORT),
     )?;
-    print_summary_report(&reports, &latest_comparisons);
+    print_summary_report(&reports, &latest_comparison.datasets);
 
     Ok(())
 }

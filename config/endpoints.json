@@ -9,5 +9,6 @@
     "ot": "https://github.com/arshtyi/ygo-cards/releases/latest/download/ot.json",
     "rd": "https://github.com/arshtyi/ygo-cards/releases/latest/download/rd.json"
   },
+  "latestRelease": "https://github.com/arshtyi/ygo-cards/releases/latest",
   "cardImageBaseUrl": "https://images.ygoprodeck.com/images/cards_cropped"
 }
