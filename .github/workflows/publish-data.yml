@@ -3,7 +3,7 @@ name: Publish card data
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 14 * * 1,5"
+    - cron: "0 10 * * 1,5"
 
 permissions:
   contents: write
@@ -19,33 +19,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Set up Rust
         run: |
-          rustup toolchain install stable \
-            --profile minimal \
-            --component clippy \
-            --component rustfmt
+          rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: Install just
-        run: cargo install just --locked
-
-      - name: Check
-        run: just check
-
       - name: Generate card data
-        run: just generate --refresh-resources --check-images
+        run: cargo run --locked --release -- --refresh-resources --check-images
 
-      - name: Verify generated files
-        run: |
-          test -s output/ot.json
-          test -s output/rd.json
-          test -s output/report.md
-          test -s output/build.log
-
-      - name: Compare data and select release version
-        id: release
+      - name: Publish changed card data
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -82,7 +67,6 @@ jobs:
             done
 
             if [[ "$unchanged" == true ]]; then
-              echo "changed=false" >> "$GITHUB_OUTPUT"
               echo "Generated card data matches release $latest_tag; publication skipped." \
                 >> "$GITHUB_STEP_SUMMARY"
               exit 0
@@ -117,42 +101,16 @@ jobs:
           )"
           tag="0.0.$next_patch"
 
-          {
-            echo "changed=true"
-            echo "tag=$tag"
-          } >> "$GITHUB_OUTPUT"
-          echo "Card data changed; preparing release $tag." >> "$GITHUB_STEP_SUMMARY"
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            tag --annotate "$tag" --message "chore(release): version bump to $tag"
+          git push origin "refs/tags/$tag"
 
-      - name: Prepare release notes
-        if: steps.release.outputs.changed == 'true'
-        env:
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-
-          short_sha="${GITHUB_SHA:0:7}"
-          {
-            printf '# ygo-cards `%s`\n\n' "$TAG"
-            printf '_Automated card-data release built from commit '
-            printf '[`%s`](https://github.com/%s/commit/%s)._\n\n' \
-              "$short_sha" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
-            sed '1,2d' output/report.md
-          } > output/release-notes.md
-          test -s output/release-notes.md
-
-      - name: Publish release
-        if: steps.release.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-
-          gh release create "$TAG" \
+          gh release create "$tag" \
             output/ot.json \
             output/rd.json \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "$TAG" \
-            --notes-file output/release-notes.md \
+            --verify-tag \
+            --title "$tag" \
+            --notes-file output/report.md \
             --latest

@@ -18,3 +18,8 @@ Canonical data-field definitions are maintained in [arshtyi/ygo-definitions](htt
 Raw database codes, bit flags, output values, and name/position mappings are maintained in `config/ot-field-mappings.json` and `config/rd-field-mappings.json`.
 
 Source-resource, published-dataset, and card-image endpoints are maintained in `config/endpoints.json`.
+
+## Workflows
+
+- [CI](.github/workflows/ci.yml) runs formatting checks, Clippy, and tests on pull requests and pushes to `main`.
+- [Publish card data](.github/workflows/publish-data.yml) runs manually or on Mondays and Fridays at 10:00 UTC. It generates data from `main` with image validation, skips publication when the datasets are unchanged, and otherwise publishes the next `0.0.x` release with `output/report.md` as its release notes. Each release uses an annotated tag with the message `chore(release): version bump to <version>`.
