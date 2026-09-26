@@ -1,25 +1,36 @@
 # ygo-cards
 
-Yu-Gi-Oh! card data generator for OT and RD environments.
+Generate normalized OT and RD Yu-Gi-Oh! card datasets from upstream YGOPro resources.
 
-The tool downloads upstream YGOPro-compatible resources, normalizes card records, and writes sorted JSON outputs for downstream consumers.
+## Usage
+
+```sh
+just
+Available recipes:
+    build          # Build the debug executable.
+    check          # Run formatting, lint, and test checks.
+    clean          # Remove Cargo build artifacts.
+    default        # List available commands.
+    fmt            # Format Rust sources.
+    generate *args # Generate datasets with the release executable and optional arguments.
+    lint           # Run Clippy with warnings treated as errors.
+    run *args      # Run the debug executable with optional arguments.
+    test           # Run all tests.
+```
 
 ## Outputs
 
-- `output/ot.json`: normalized OT card data.
-- `output/rd.json`: normalized RD card data.
-- `output/report.md`: release-ready Markdown with an at-a-glance dataset summary, new cards since the previous release, image validation, and grouped build diagnostics.
-- `output/build.log`: numbered, structured warning and error records with aligned context, reasons, suggestions, and final severity totals.
+- `output/ot.json`, `output/rd.json`: card datasets sorted by ID.
+- `output/report.md`: dataset summary, new cards, image checks, and diagnostics.
+- `output/build.log`: structured build warnings and errors.
 
-## Field Definitions
+## Data
 
-Canonical data-field definitions are maintained in [arshtyi/ygo-definitions](https://github.com/arshtyi/ygo-definitions).
-
-Raw database codes, bit flags, output values, and name/position mappings are maintained in `config/ot-field-mappings.json` and `config/rd-field-mappings.json`.
-
-Source-resource, published-dataset, and card-image endpoints are maintained in `config/endpoints.json`.
+- Field definitions: [ygo-definitions](https://github.com/arshtyi/ygo-definitions).
+- Field mappings: `config/{ot,rd}-field-mappings.json`.
+- Resource, search, release, and image URLs: `config/endpoints.json`.
 
 ## Workflows
 
-- [CI](.github/workflows/ci.yml) runs formatting checks, Clippy, and tests on pull requests and pushes to `main`.
-- [Publish card data](.github/workflows/publish-data.yml) runs manually or on Mondays and Fridays at 10:00 UTC. It generates data from `main` with image validation, skips publication when the datasets are unchanged, and otherwise publishes the next `0.0.x` release with `output/report.md` as its release notes. Each release uses an annotated tag with the message `chore(release): version bump to <version>`.
+- [CI](.github/workflows/ci.yml): formatting, Clippy, and tests.
+- [Publish](.github/workflows/publish-data.yml): manual or Monday/Friday at 10:00 UTC; checks images and publishes changed datasets as the next `0.0.x` release.

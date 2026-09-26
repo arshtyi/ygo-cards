@@ -13,6 +13,7 @@ pub(crate) struct Endpoints {
     source_resources: SourceResourceUrls,
     published_datasets: PublishedDatasetUrls,
     latest_release: String,
+    card_search_url: String,
     card_image_base_url: String,
 }
 
@@ -21,6 +22,7 @@ pub(crate) struct Endpoints {
 struct SourceResourceUrls {
     ot_cards_database: String,
     ot_forbidden_list: String,
+    ot_genesys_list: String,
     rd_cards_database: String,
     rd_forbidden_list: String,
 }
@@ -36,6 +38,7 @@ struct PublishedDatasetUrls {
 pub(crate) enum SourceResource {
     OtCardsDatabase,
     OtForbiddenList,
+    OtGenesysList,
     RdCardsDatabase,
     RdForbiddenList,
 }
@@ -53,6 +56,7 @@ impl Endpoints {
         match resource {
             SourceResource::OtCardsDatabase => &self.source_resources.ot_cards_database,
             SourceResource::OtForbiddenList => &self.source_resources.ot_forbidden_list,
+            SourceResource::OtGenesysList => &self.source_resources.ot_genesys_list,
             SourceResource::RdCardsDatabase => &self.source_resources.rd_cards_database,
             SourceResource::RdForbiddenList => &self.source_resources.rd_forbidden_list,
         }
@@ -73,6 +77,10 @@ impl Endpoints {
         &self.card_image_base_url
     }
 
+    pub(crate) fn card_search_url(&self) -> &str {
+        &self.card_search_url
+    }
+
     fn validate(&self) -> Result<()> {
         validate_url(
             "sourceResources.otCardsDatabase",
@@ -81,6 +89,10 @@ impl Endpoints {
         validate_url(
             "sourceResources.otForbiddenList",
             &self.source_resources.ot_forbidden_list,
+        )?;
+        validate_url(
+            "sourceResources.otGenesysList",
+            &self.source_resources.ot_genesys_list,
         )?;
         validate_url(
             "sourceResources.rdCardsDatabase",
@@ -93,6 +105,7 @@ impl Endpoints {
         validate_url("publishedDatasets.ot", &self.published_datasets.ot)?;
         validate_url("publishedDatasets.rd", &self.published_datasets.rd)?;
         validate_url("latestRelease", &self.latest_release)?;
+        validate_url("cardSearchUrl", &self.card_search_url)?;
         validate_url("cardImageBaseUrl", &self.card_image_base_url)?;
         Ok(())
     }
@@ -137,6 +150,12 @@ mod tests {
                 .ends_with("/rd.json")
         );
         assert!(config.latest_release_url().ends_with("/releases/latest"));
+        assert!(
+            config
+                .source_url(SourceResource::OtGenesysList)
+                .ends_with("/lflist.conf")
+        );
+        assert!(config.card_search_url().ends_with("/api/v0/"));
         assert!(config.card_image_base_url().starts_with("https://"));
     }
 

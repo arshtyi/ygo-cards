@@ -34,4 +34,4 @@ generate *args:
 
 # Remove Cargo build artifacts.
 clean:
-    cargo clean
+    cargo clean && rm -rf assets && rm -rf output

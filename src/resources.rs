@@ -35,6 +35,11 @@ const RESOURCE_DEFINITIONS: &[ResourceDefinition] = &[
         path: &["ot", "lflist.conf"],
     },
     ResourceDefinition {
+        name: "ot genesys list",
+        source: SourceResource::OtGenesysList,
+        path: &["ot", "genesys.conf"],
+    },
+    ResourceDefinition {
         name: "rd cards database",
         source: SourceResource::RdCardsDatabase,
         path: &["rd", "rd_standard.cdb"],

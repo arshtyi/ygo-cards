@@ -1,4 +1,5 @@
 mod classification;
+mod genesys;
 mod normalization;
 mod restrictions;
 
@@ -16,6 +17,7 @@ use crate::environment::Environment;
 
 use self::{
     classification::{map_attribute, map_card_types},
+    genesys::{GenesysPoints, read_genesys_points},
     normalization::{
         normalize_atk, normalize_def, normalize_description, normalize_level,
         normalize_link_markers, normalize_link_value, normalize_pendulum_description,
@@ -26,6 +28,7 @@ use self::{
 
 const DATABASE_PATH: &str = "assets/ot/cards.cdb";
 const FORBIDDEN_LIST_PATH: &str = "assets/ot/lflist.conf";
+const GENESYS_LIST_PATH: &str = "assets/ot/genesys.conf";
 const OUTPUT_PATH: &str = "output/ot.json";
 
 #[derive(Debug, Serialize)]
@@ -44,6 +47,7 @@ struct Card {
     r#type: Vec<String>,
     #[serde(rename = "lf")]
     restrictions: Vec<i64>,
+    genesys: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     atk: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,8 +81,14 @@ struct DatabaseRow {
 pub(crate) fn generate(options: GenerationOptions) -> Result<DatasetReport> {
     ensure_ot_mappings()?;
     let forbidden_lists = read_forbidden_lists(Path::new(FORBIDDEN_LIST_PATH))?;
+    let genesys = read_genesys_points(Path::new(GENESYS_LIST_PATH))?;
     let mut images = ImageResolver::new(options)?;
-    let collection = read_cards(Path::new(DATABASE_PATH), &forbidden_lists, &mut images)?;
+    let collection = read_cards(
+        Path::new(DATABASE_PATH),
+        &forbidden_lists,
+        genesys,
+        &mut images,
+    )?;
     let path = PathBuf::from(OUTPUT_PATH);
 
     write_dataset(&path, &collection.cards)?;
@@ -96,10 +106,12 @@ pub(crate) fn generate(options: GenerationOptions) -> Result<DatasetReport> {
 fn read_cards(
     db_path: &Path,
     forbidden_lists: &ForbiddenLists,
+    mut genesys: GenesysPoints,
     images: &mut ImageResolver,
 ) -> Result<CardCollection<Card>> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open cards database {}", db_path.display()))?;
+    inherit_genesys_aliases(&connection, &mut genesys)?;
     let total_rows = connection
         .query_row("select count(*) from datas", [], |row| row.get::<_, i64>(0))
         .context("failed to count OT card rows")? as usize;
@@ -137,7 +149,7 @@ fn read_cards(
     for (row_index, row) in rows.enumerate() {
         match row {
             Ok(row) => {
-                if let Some(card) = build_card(row, forbidden_lists, images) {
+                if let Some(card) = build_card(row, forbidden_lists, &genesys, images) {
                     cards.push(card);
                 } else {
                     cards_skipped += 1;
@@ -158,9 +170,22 @@ fn read_cards(
     })
 }
 
+fn inherit_genesys_aliases(connection: &Connection, genesys: &mut GenesysPoints) -> Result<()> {
+    let mut statement = connection
+        .prepare("select id, alias from datas where id > 0 and alias > 0 order by id")
+        .context("failed to prepare OT alias query")?;
+    let aliases = statement
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+        .context("failed to query OT aliases")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read OT aliases")?;
+    genesys.inherit_aliases(aliases)
+}
+
 fn build_card(
     row: DatabaseRow,
     forbidden_lists: &ForbiddenLists,
+    genesys: &GenesysPoints,
     images: &mut ImageResolver,
 ) -> Option<Card> {
     if row.id <= 0 {
@@ -293,6 +318,7 @@ fn build_card(
         alias: row.alias,
         r#type: card_type,
         restrictions: forbidden_lists.for_card(row.id, row.alias),
+        genesys: genesys.for_card(row.id),
         atk,
         def,
         level,
@@ -313,7 +339,7 @@ mod tests {
 
     #[test]
     fn serializes_general_properties() {
-        let card = Card {
+        let mut card = Card {
             id: 89631139,
             name: String::from("Blue-Eyes White Dragon"),
             attribute: 1,
@@ -323,6 +349,7 @@ mod tests {
             alias: 0,
             r#type: labels(&["怪兽", "龙族", "通常"]),
             restrictions: vec![3, 1],
+            genesys: 5,
             atk: Some(3000),
             def: Some(2500),
             level: Some(8),
@@ -335,7 +362,12 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"description":"A legendary dragon.","alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1],"atk":3000,"def":2500,"level":8}"#
+            r#"{"id":89631139,"name":"Blue-Eyes White Dragon","attribute":1,"image":89631139,"description":"A legendary dragon.","alias":0,"type":["怪兽","龙族","通常"],"lf":[3,1],"genesys":5,"atk":3000,"def":2500,"level":8}"#
         );
+        for points in [-1, 0] {
+            card.genesys = points;
+            let json = serde_json::to_value(&card).unwrap();
+            assert_eq!(json["genesys"].as_i64(), Some(points));
+        }
     }
 }
