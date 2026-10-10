@@ -5,7 +5,6 @@ Generate normalized OT and RD Yu-Gi-Oh! card datasets from upstream YGOPro resou
 ## Usage
 
 ```sh
-just
 Available recipes:
     build          # Build the debug executable.
     check          # Run formatting, lint, and test checks.
@@ -21,7 +20,10 @@ Available recipes:
 ## Outputs
 
 - `output/ot.json`, `output/rd.json`: card datasets sorted by ID.
-- `output/report.md`: dataset summary, new cards, image checks, and diagnostics.
+- `output/report.md`: dataset summary, added/modified/removed counts, image checks, and diagnostics.
+- `output/ot.diff`, `output/rd.diff`: separate complete unified diffs against the previous release; each is generated and attached only when its dataset changes.
+- `output/release-notes.md`: concise release summary with added/modified/removed counts.
+- `output/release-changed`: publication decision from the same comparison (`true`/`false`).
 - `output/build.log`: structured build warnings and errors.
 
 ## Data

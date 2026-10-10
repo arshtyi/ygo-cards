@@ -106,7 +106,7 @@ fn render_summary_report(
     }
 
     if !latest_comparisons.is_empty() {
-        let _ = writeln!(output, "  New since latest");
+        let _ = writeln!(output, "  Changes since latest");
         let width = latest_comparisons
             .iter()
             .map(|comparison| comparison.environment.label().len())
@@ -117,9 +117,11 @@ fn render_summary_report(
                 LatestComparisonStatus::Compared { previous_cards } => {
                     let _ = writeln!(
                         output,
-                        "    {:<width$}  {} new ({} -> {} cards)",
+                        "    {:<width$}  {} added, {} modified, {} removed ({} -> {} cards)",
                         comparison.environment,
-                        format_count(comparison.added_cards.len()),
+                        format_count(comparison.added_cards),
+                        format_count(comparison.modified_cards),
+                        format_count(comparison.removed_cards),
                         format_count(*previous_cards),
                         format_count(comparison.current_cards)
                     );
@@ -128,13 +130,6 @@ fn render_summary_report(
                     let _ = writeln!(
                         output,
                         "    {:<width$}  unavailable (no previous release)",
-                        comparison.environment
-                    );
-                }
-                LatestComparisonStatus::Unavailable(_) => {
-                    let _ = writeln!(
-                        output,
-                        "    {:<width$}  unavailable (see diagnostics)",
                         comparison.environment
                     );
                 }

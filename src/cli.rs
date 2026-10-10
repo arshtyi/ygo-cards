@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::Parser;
 
 #[derive(Debug, Default, Parser, PartialEq, Eq)]
@@ -17,6 +19,18 @@ pub(crate) struct Options {
     /// Skip cards whose primary and alias images both fail (requires --check-images)
     #[arg(long, requires = "check_images")]
     pub(crate) skip_image_failures: bool,
+
+    /// Compare with ot.json and rd.json from a fixed previous release directory
+    #[arg(long, conflicts_with = "no_previous_release")]
+    pub(crate) previous_release_dir: Option<PathBuf>,
+
+    /// Link to the fixed previous release in the report
+    #[arg(long, requires = "previous_release_dir")]
+    pub(crate) previous_release_url: Option<String>,
+
+    /// Generate an initial release without a previous-release comparison
+    #[arg(long)]
+    pub(crate) no_previous_release: bool,
 }
 
 impl Options {
@@ -51,6 +65,7 @@ mod tests {
                 refresh_resources: true,
                 check_images: true,
                 skip_image_failures: true,
+                ..Options::default()
             }
         );
     }
@@ -62,6 +77,45 @@ mod tests {
         assert_eq!(
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn requires_an_unambiguous_previous_release_source() {
+        assert!(
+            Options::try_parse_from([
+                "ygo-cards",
+                "--previous-release-dir",
+                "baseline",
+                "--no-previous-release"
+            ])
+            .is_err()
+        );
+        assert!(
+            Options::try_parse_from([
+                "ygo-cards",
+                "--previous-release-url",
+                "https://example.test/releases/tag/1"
+            ])
+            .is_err()
+        );
+        let options = Options::try_parse_from([
+            "ygo-cards",
+            "--previous-release-dir",
+            "baseline",
+            "--previous-release-url",
+            "https://example.test/releases/tag/1",
+        ])
+        .unwrap();
+        assert_eq!(
+            options.previous_release_dir,
+            Some(PathBuf::from("baseline"))
+        );
+        assert!(!options.no_previous_release);
+        assert!(
+            Options::try_parse_from(["ygo-cards", "--no-previous-release"])
+                .unwrap()
+                .no_previous_release
         );
     }
 

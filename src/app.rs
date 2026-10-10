@@ -9,7 +9,10 @@ use crate::{
     diagnostics::{self, BUILD_LOG_PATH, Diagnostic},
     formatting::{format_count, plural},
     latest::compare_latest_release,
-    report::{SUMMARY_REPORT, print_dataset_report, print_summary_report, write_summary_report},
+    report::{
+        SUMMARY_REPORT, print_dataset_report, print_summary_report, write_release_notes,
+        write_summary_report,
+    },
     resources,
 };
 
@@ -125,13 +128,19 @@ fn generate(options: Options) -> Result<()> {
     print_dataset_report(&rd_report);
 
     let reports = [&ot_report, &rd_report];
-    let latest_comparison = compare_latest_release(&reports)?;
+    let latest_comparison = compare_latest_release(&reports, &options)?;
     let diagnostic_snapshot = diagnostics::snapshot()?;
     anyhow::ensure!(
         diagnostic_snapshot.errors() == 0,
         "build recorded {} internal error diagnostics; see {BUILD_LOG_PATH}",
         diagnostic_snapshot.errors()
     );
+    latest_comparison.write_artifacts(Path::new("output"))?;
+    write_release_notes(
+        &reports,
+        &latest_comparison,
+        Path::new("output/release-notes.md"),
+    )?;
     write_summary_report(
         &reports,
         &latest_comparison,

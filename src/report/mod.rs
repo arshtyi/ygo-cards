@@ -5,7 +5,7 @@ use crate::cards::{DatasetReport, ImageCheckSummary};
 use crate::formatting::{format_count, plural};
 
 pub(crate) use console::{print_dataset_report, print_summary_report};
-pub(crate) use markdown::write_summary_report;
+pub(crate) use markdown::{write_release_notes, write_summary_report};
 
 pub(crate) const SUMMARY_REPORT: &str = "output/report.md";
 

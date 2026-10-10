@@ -39,9 +39,7 @@ fn build_summary_report(
     let totals = ReportTotals::from_reports(reports);
 
     report.push_str("# ygo-cards Card Data Report\n\n");
-    append_build_note(&mut report, reports.len(), &totals);
-    append_overview(&mut report, reports, &latest_comparison.datasets, &totals);
-    append_latest_comparison_report(&mut report, latest_comparison);
+    append_release_summary(&mut report, reports, latest_comparison, &totals);
     append_image_report(&mut report, reports, &totals);
     append_diagnostics(&mut report, diagnostics);
     report
@@ -100,8 +98,8 @@ fn append_overview(
         let new_total = latest_comparisons
             .iter()
             .filter_map(|comparison| match comparison.status {
-                LatestComparisonStatus::Compared { .. } => Some(comparison.added_cards.len()),
-                LatestComparisonStatus::NotFound | LatestComparisonStatus::Unavailable(_) => None,
+                LatestComparisonStatus::Compared { .. } => Some(comparison.added_cards),
+                LatestComparisonStatus::NotFound => None,
             })
             .sum::<usize>();
         let all_compared = latest_comparisons.len() == reports.len()
@@ -130,9 +128,8 @@ fn append_overview(
 
 fn latest_overview_value(comparison: &LatestComparisonReport) -> String {
     match comparison.status {
-        LatestComparisonStatus::Compared { .. } => format_count(comparison.added_cards.len()),
+        LatestComparisonStatus::Compared { .. } => format_count(comparison.added_cards),
         LatestComparisonStatus::NotFound => String::from("No baseline"),
-        LatestComparisonStatus::Unavailable(_) => String::from("Unavailable"),
     }
 }
 
@@ -156,58 +153,49 @@ fn append_latest_comparison_report(
     }
 
     for comparison in &latest_comparison.datasets {
-        report.push_str(&format!(
-            "### {}\n\n",
-            escape_markdown_cell(comparison.environment.label())
-        ));
-
+        report.push_str(&format!("### {}\n\n", comparison.environment));
         match &comparison.status {
             LatestComparisonStatus::Compared { previous_cards } => {
                 report.push_str(&format!(
-                    "**{} new** ({} → {} cards).\n\n",
-                    format_count(comparison.added_cards.len()),
+                    "**{} added, {} modified, {} removed** ({} → {} cards).\n\n",
+                    format_count(comparison.added_cards),
+                    format_count(comparison.modified_cards),
+                    format_count(comparison.removed_cards),
                     format_count(*previous_cards),
                     format_count(comparison.current_cards)
                 ));
-
-                if comparison.added_cards.is_empty() {
-                    report.push_str("No new card IDs were found.\n\n");
-                } else {
-                    begin_collapsed(
-                        report,
-                        &format!(
-                            "View {} new {} {}",
-                            format_count(comparison.added_cards.len()),
-                            comparison.environment,
-                            plural(comparison.added_cards.len(), "card", "cards")
-                        ),
-                    );
-                    report.push_str("| ID | Name | Type |\n");
-                    report.push_str("| ---: | --- | --- |\n");
-                    for card in &comparison.added_cards {
-                        report.push_str(&format!(
-                            "| {} | {} | {} |\n",
-                            card.id,
-                            escape_markdown_cell(&card.name),
-                            escape_markdown_cell(&card_type_display(&card.card_type))
-                        ));
-                    }
-                    end_collapsed(report);
-                }
             }
             LatestComparisonStatus::NotFound => {
-                report.push_str(
-                    "> [!IMPORTANT]\n> No previous dataset was found. This is expected for the first release, so new-card counts are unavailable.\n\n",
-                );
-            }
-            LatestComparisonStatus::Unavailable(reason) => {
-                report.push_str(&format!(
-                    "> [!WARNING]\n> The previous dataset could not be compared: {}\n\n",
-                    escape_markdown_cell(reason)
-                ));
+                report.push_str("No previous release; diff omitted.\n\n");
             }
         }
     }
+}
+
+fn append_release_summary(
+    report: &mut String,
+    reports: &[&DatasetReport],
+    comparison: &LatestReleaseComparison,
+    totals: &ReportTotals,
+) {
+    append_build_note(report, reports.len(), totals);
+    append_overview(report, reports, &comparison.datasets, totals);
+    append_latest_comparison_report(report, comparison);
+}
+
+pub(crate) fn write_release_notes(
+    reports: &[&DatasetReport],
+    comparison: &LatestReleaseComparison,
+    path: &Path,
+) -> Result<()> {
+    let mut notes = String::new();
+    append_release_summary(
+        &mut notes,
+        reports,
+        comparison,
+        &ReportTotals::from_reports(reports),
+    );
+    fs::write(path, notes).with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn append_image_report(report: &mut String, reports: &[&DatasetReport], totals: &ReportTotals) {
@@ -503,38 +491,20 @@ fn escape_html(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn card_type_display(card_type: &[String]) -> String {
-    if card_type.is_empty() {
-        String::from("—")
-    } else {
-        card_type.join(" / ")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use super::*;
     use crate::{
-        cards::ImageCheckSummary,
-        diagnostics::Diagnostic,
-        environment::Environment,
-        latest::{CardSummary, ReleaseReference},
+        cards::ImageCheckSummary, diagnostics::Diagnostic, environment::Environment,
+        latest::ReleaseReference,
     };
 
     fn comparison(datasets: Vec<LatestComparisonReport>) -> LatestReleaseComparison {
         LatestReleaseComparison {
             release: None,
             datasets,
-        }
-    }
-
-    fn card(id: i64, name: &str, card_type: &[&str]) -> CardSummary {
-        CardSummary {
-            id,
-            name: name.to_string(),
-            card_type: card_type.iter().map(|value| value.to_string()).collect(),
         }
     }
 
@@ -574,12 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn formats_card_types_and_large_counts() {
-        assert_eq!(
-            card_type_display(&["怪兽".to_string(), "龙族".to_string(), "通常".to_string()]),
-            "怪兽 / 龙族 / 通常"
-        );
-        assert_eq!(card_type_display(&[]), "—");
+    fn formats_large_counts() {
         assert_eq!(format_count(12_345_678), "12,345,678");
     }
 
@@ -595,7 +560,10 @@ mod tests {
                 environment: Environment::Ot,
                 current_cards: 9,
                 status: LatestComparisonStatus::Compared { previous_cards: 8 },
-                added_cards: vec![card(2, "New|Card", &["怪兽", "龙族", "通常"])],
+                added_cards: 1,
+                modified_cards: 2,
+                removed_cards: 0,
+                diff: String::from("--- a/ot.json\n+++ b/ot.json\n@@ -1 +1 @@\n-old\n+new\n"),
             }],
         };
 
@@ -611,9 +579,17 @@ mod tests {
             "Previous release: [0.0.1](https://github.com/arshtyi/ygo-cards/releases/tag/0.0.1)."
         ));
         assert!(!report.contains("releases/latest/download"));
-        assert!(report.contains("**1 new** (8 → 9 cards)."));
-        assert!(report.contains("<summary>View 1 new OT card</summary>"));
-        assert!(report.contains("| 2 | New\\|Card | 怪兽 / 龙族 / 通常 |"));
+        assert!(report.contains("**1 added, 2 modified, 0 removed** (8 → 9 cards)."));
+        assert!(!report.contains("```diff"));
+        assert!(!report.contains(&comparisons.datasets[0].diff));
+        let changes = report
+            .split("## Changes Since the Previous Release")
+            .nth(1)
+            .unwrap()
+            .split("## Image Validation")
+            .next()
+            .unwrap();
+        assert!(!changes.contains("<details>"));
         assert!(
             report
                 .find("## Changes Since the Previous Release")
@@ -639,6 +615,76 @@ mod tests {
         append_overview(&mut output, &reports, &[], &totals);
 
         assert!(output.contains("| **Total** | **12** | **1** | Unavailable | — |"));
+    }
+
+    #[test]
+    fn report_and_release_notes_never_embed_diff_contents() {
+        let environment_report = report_with_image_failure();
+        for status in [
+            LatestComparisonStatus::NotFound,
+            LatestComparisonStatus::Compared { previous_cards: 9 },
+        ] {
+            let comparisons = comparison(vec![LatestComparisonReport {
+                environment: Environment::Ot,
+                current_cards: 9,
+                status,
+                added_cards: 0,
+                modified_cards: 1,
+                removed_cards: 0,
+                diff: format!(
+                    "--- a/ot.json\n+++ b/ot.json\n@@ -1 +1 @@\n-old\n+{}\n",
+                    "内容".repeat(20_000)
+                ),
+            }]);
+            let mut notes = String::new();
+            append_release_summary(
+                &mut notes,
+                &[&environment_report],
+                &comparisons,
+                &ReportTotals::from_reports(&[&environment_report]),
+            );
+            assert!(notes.len() < 2_000);
+            assert!(!notes.contains("```diff"));
+            assert!(!notes.contains("<details>"));
+            assert!(!notes.contains("## Image Validation"));
+            assert!(!notes.contains("内容"));
+            assert!(!notes.contains("ot.diff"));
+            assert!(!notes.contains("preview"));
+            let report = build_summary_report(
+                &[&environment_report],
+                &comparisons,
+                &DiagnosticSnapshot::default(),
+            );
+            assert!(!report.contains("```diff"));
+            assert!(!report.contains("内容"));
+            let mut without_diff = comparisons;
+            without_diff.datasets[0].diff.clear();
+            let mut notes_without_diff = String::new();
+            append_release_summary(
+                &mut notes_without_diff,
+                &[&environment_report],
+                &without_diff,
+                &ReportTotals::from_reports(&[&environment_report]),
+            );
+            assert_eq!(notes, notes_without_diff);
+            assert_eq!(
+                report,
+                build_summary_report(
+                    &[&environment_report],
+                    &without_diff,
+                    &DiagnosticSnapshot::default()
+                )
+            );
+            match without_diff.datasets[0].status {
+                LatestComparisonStatus::NotFound => {
+                    assert!(notes.contains("No previous release; diff omitted."));
+                    assert!(!notes.contains("modified"));
+                }
+                LatestComparisonStatus::Compared { .. } => {
+                    assert!(notes.contains("**0 added, 1 modified, 0 removed**"))
+                }
+            }
+        }
     }
 
     #[test]
