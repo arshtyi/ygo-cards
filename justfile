@@ -1,10 +1,12 @@
+set positional-arguments
+
 # List available commands.
 default:
     @just --list
 
-# Format Rust sources.
-fmt:
-    cargo fmt --all
+# Format Rust sources, or check formatting with --check.
+fmt *args:
+    cargo fmt --all -- "$@"
 
 # Run Clippy with warnings treated as errors.
 lint:
@@ -15,23 +17,17 @@ test:
     cargo test --locked
 
 # Run formatting, lint, and test checks.
-check:
-    cargo fmt --all -- --check
-    cargo clippy --locked --all-targets -- -D warnings
-    cargo test --locked
-
-# Build the debug executable.
-build:
-    cargo build --locked
+check: (fmt "--check") lint test
 
 # Run the debug executable with optional arguments.
 run *args:
-    cargo run --locked -- {{args}}
+    cargo run --locked -- "$@"
 
 # Generate datasets with the release executable and optional arguments.
 generate *args:
-    cargo run --locked --release -- {{args}}
+    cargo run --locked --release -- "$@"
 
-# Remove Cargo build artifacts.
+# Remove build artifacts, cached resources, and generated outputs.
 clean:
-    cargo clean && rm -rf assets && rm -rf output
+    cargo clean
+    rm -rf assets output

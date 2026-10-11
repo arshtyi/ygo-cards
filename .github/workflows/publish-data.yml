@@ -1,136 +1,61 @@
 name: Publish card data
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 10 * * 1,5"
+    workflow_dispatch:
+    schedule:
+        - cron: "0 10 * * 1,4"
 
 permissions:
-  contents: write
+    contents: write
 
 concurrency:
-  group: publish-card-data
-  cancel-in-progress: false
+    group: publish-card-data
+    cancel-in-progress: false
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+    publish:
+        runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: main
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+              with:
+                  ref: main
 
-      - name: Set up Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+            - name: Set up Rust
+              run: |
+                  rustup toolchain install stable --profile minimal
+                  rustup default stable
 
-      - name: Download previous release
-        id: previous
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
+            - name: Install just
+              run: cargo install just --locked
 
-          release_error="$RUNNER_TEMP/latest-release-error"
-          if latest_release="$(
-            gh release view \
-              --repo "$GITHUB_REPOSITORY" \
-              --json tagName,url \
-              2>"$release_error"
-          )"; then
-            latest_tag="$(jq --raw-output .tagName <<< "$latest_release")"
-            latest_url="$(jq --raw-output .url <<< "$latest_release")"
-            previous_dir="$RUNNER_TEMP/previous-release"
-            mkdir -p "$previous_dir"
-            gh release download "$latest_tag" \
-              --repo "$GITHUB_REPOSITORY" \
-              --dir "$previous_dir" \
-              --pattern "ot.json" \
-              --pattern "rd.json"
+            - name: Generate and publish changed card data
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
+                  trap 'if [[ -f output/report.md ]]; then cat output/report.md >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
+                  just generate --refresh-resources --check-images
 
-            for dataset in ot rd; do
-              test -s "$previous_dir/$dataset.json"
-            done
-            echo "directory=$previous_dir" >> "$GITHUB_OUTPUT"
-            echo "url=$latest_url" >> "$GITHUB_OUTPUT"
-          else
-            release_count="$(
-              gh release list \
-                --repo "$GITHUB_REPOSITORY" \
-                --limit 1 \
-                --exclude-drafts \
-                --exclude-pre-releases \
-                --json tagName \
-                --jq length
-            )"
-            if [[ "$release_count" != "0" ]]; then
-              cat "$release_error" >&2
-              exit 1
-            fi
-          fi
+                  jq -e --arg source "https://github.com/$GITHUB_REPOSITORY/releases/latest" \
+                      '.latest_release == $source' output/comparison.json > /dev/null
+                  if jq -e '.previous_release != null and .has_changes == false' output/comparison.json > /dev/null; then
+                      echo 'Card data is unchanged; no release created.'
+                      exit 0
+                  fi
 
-      - name: Generate card data
-        env:
-          PREVIOUS_RELEASE_DIR: ${{ steps.previous.outputs.directory }}
-          PREVIOUS_RELEASE_URL: ${{ steps.previous.outputs.url }}
-        run: |
-          set -euo pipefail
-          comparison_args=(--no-previous-release)
-          if [[ -n "$PREVIOUS_RELEASE_DIR" ]]; then
-            comparison_args=(
-              --previous-release-dir "$PREVIOUS_RELEASE_DIR"
-              --previous-release-url "$PREVIOUS_RELEASE_URL"
-            )
-          fi
-          cargo run --locked --release -- --refresh-resources --check-images "${comparison_args[@]}"
-
-      - name: Publish changed card data
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          case "$(cat output/release-changed)" in
-            false)
-              echo "Generated card data matches the previous release; publication skipped." \
-                >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-              ;;
-            true) ;;
-            *) echo "Invalid release comparison result" >&2; exit 1 ;;
-          esac
-
-          next_patch="$(
-            gh api --paginate \
-              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-              --jq '.[].tag_name' |
-              awk -F. '
-                NF == 3 && $1 == "0" && $2 == "0" && $3 ~ /^[1-9][0-9]*$/ {
-                  patch = $3 + 0
-                  if (patch > max) max = patch
-                }
-                END { print max + 1 }
-              '
-          )"
-          tag="0.0.$next_patch"
-
-          git -c user.name="github-actions[bot]" \
-            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            tag --annotate "$tag" --message "chore(release): version bump to $tag"
-          git push origin "refs/tags/$tag"
-
-          assets=(output/ot.json output/rd.json)
-          for dataset in ot rd; do
-            if [[ -s "output/$dataset.diff" ]]; then
-              assets+=("output/$dataset.diff")
-            fi
-          done
-          gh release create "$tag" \
-            "${assets[@]}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "$tag" \
-            --notes-file output/release-notes.md \
-            --latest
+                  next_patch="$(
+                      gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name' |
+                          jq -Rs '[split("\n")[] | select(test("^0\\.0\\.[0-9]+$")) | split(".")[2] | tonumber] | (max // 0) + 1'
+                  )"
+                  tag="0.0.$next_patch"
+                  assets=(output/ot.json output/rd.json)
+                  for file in output/ot.diff output/rd.diff; do
+                      if [[ -s "$file" ]]; then
+                          assets+=("$file")
+                      fi
+                  done
+                  gh release create "$tag" "${assets[@]}" \
+                      --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" \
+                      --title "$tag" --notes-file output/report.md --latest

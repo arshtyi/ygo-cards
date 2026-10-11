@@ -6,11 +6,10 @@ Generate normalized OT and RD Yu-Gi-Oh! card datasets from upstream YGOPro resou
 
 ```sh
 Available recipes:
-    build          # Build the debug executable.
     check          # Run formatting, lint, and test checks.
-    clean          # Remove Cargo build artifacts.
+    clean          # Remove build artifacts, cached resources, and generated outputs.
     default        # List available commands.
-    fmt            # Format Rust sources.
+    fmt *args      # Format Rust sources, or check formatting with --check.
     generate *args # Generate datasets with the release executable and optional arguments.
     lint           # Run Clippy with warnings treated as errors.
     run *args      # Run the debug executable with optional arguments.
@@ -20,19 +19,13 @@ Available recipes:
 ## Outputs
 
 - `output/ot.json`, `output/rd.json`: card datasets sorted by ID.
-- `output/report.md`: dataset summary, added/modified/removed counts, image checks, and diagnostics.
-- `output/ot.diff`, `output/rd.diff`: separate complete unified diffs against the previous release; each is generated and attached only when its dataset changes.
-- `output/release-notes.md`: concise release summary with added/modified/removed counts.
-- `output/release-changed`: publication decision from the same comparison (`true`/`false`).
-- `output/build.log`: structured build warnings and errors.
+- `output/ot.diff`, `output/rd.diff`: separate unified patches with one context line.
+- `output/report.md`: change counts, added-card lists for OT/RD, image validation results, and warning/error details.
+- `output/comparison.json`: the fixed baseline and change status consumed by the publishing workflow.
 
-## Data
+## Configuration and workflows
 
 - Field definitions: [ygo-definitions](https://github.com/arshtyi/ygo-definitions).
 - Field mappings: `config/{ot,rd}-field-mappings.json`.
-- Resource, search, release, and image URLs: `config/endpoints.json`.
-
-## Workflows
-
-- [CI](.github/workflows/ci.yml): formatting, Clippy, and tests.
-- [Publish](.github/workflows/publish-data.yml): manual or Monday/Friday at 10:00 UTC; checks images and publishes changed datasets as the next `0.0.x` release.
+- [CI](.github/workflows/ci.yml).
+- [Publish](.github/workflows/publish-data.yml).

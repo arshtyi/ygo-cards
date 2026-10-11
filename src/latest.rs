@@ -2,14 +2,14 @@ use std::{collections::BTreeMap, fs, path::Path, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use reqwest::StatusCode;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use similar::TextDiff;
 
-use crate::{cards::DatasetReport, cli::Options, endpoints, environment::Environment};
+use crate::{cards::DatasetReport, endpoints, environment::Environment};
 
 pub(crate) fn compare_latest_release(
     reports: &[&DatasetReport],
-    options: &Options,
 ) -> Result<LatestReleaseComparison> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!(
@@ -22,31 +22,21 @@ pub(crate) fn compare_latest_release(
         .context("failed to build latest release HTTP client")?;
     let endpoints = endpoints::endpoints()?;
     // Resolve latest only once, before fetching either dataset.
-    let release = if options.no_previous_release {
-        None
-    } else if options.previous_release_dir.is_some() {
-        options
-            .previous_release_url
-            .as_deref()
-            .map(release_reference)
-            .transpose()?
-    } else {
-        resolve_latest_release(&client, endpoints.latest_release_url())?
-    };
+    let release = resolve_latest_release(&client, endpoints.latest_release_url())?;
+    compare_release(reports, &client, release)
+}
 
+fn compare_release(
+    reports: &[&DatasetReport],
+    client: &reqwest::blocking::Client,
+    release: Option<ReleaseReference>,
+) -> Result<LatestReleaseComparison> {
     let datasets = reports
         .iter()
         .map(|report| {
             let current = read_cards(&report.path)?;
-            let previous = if let Some(directory) = &options.previous_release_dir {
-                Some(read_cards(
-                    &directory.join(dataset_filename(report.environment)),
-                )?)
-            } else if let Some(release) = &release {
-                let url = pinned_dataset_url(
-                    endpoints.published_dataset_url(report.environment),
-                    release,
-                )?;
+            let previous = if let Some(release) = &release {
+                let url = release.dataset_url(report.environment);
                 let text = client
                     .get(&url)
                     .send()
@@ -75,7 +65,7 @@ fn resolve_latest_release(
         .head(url)
         .send()
         .context("failed to resolve latest release")?;
-    if response.status() == StatusCode::NOT_FOUND {
+    if response.status() == StatusCode::NOT_FOUND && response.url().as_str() == url {
         return Ok(None);
     }
     let response = response
@@ -104,18 +94,6 @@ fn release_reference(url: &str) -> Result<ReleaseReference> {
 fn release_tag_from_path(path: &str) -> Option<&str> {
     let (_, tag) = path.split_once("/releases/tag/")?;
     (!tag.is_empty()).then_some(tag)
-}
-
-fn pinned_dataset_url(url: &str, release: &ReleaseReference) -> Result<String> {
-    ensure!(
-        url.contains("/releases/latest/download/"),
-        "dataset URL cannot be pinned to a release: {url}"
-    );
-    Ok(url.replacen(
-        "/releases/latest/download/",
-        &format!("/releases/download/{}/", release.tag),
-        1,
-    ))
 }
 
 fn dataset_filename(environment: Environment) -> &'static str {
@@ -164,9 +142,8 @@ fn compare_cards(
 ) -> Result<LatestComparisonReport> {
     let mut report = LatestComparisonReport {
         environment,
-        current_cards: current.len(),
-        status: LatestComparisonStatus::NotFound,
-        added_cards: 0,
+        previous_cards: None,
+        added_cards: Vec::new(),
         modified_cards: 0,
         removed_cards: 0,
         diff: String::new(),
@@ -174,12 +151,13 @@ fn compare_cards(
     let Some(previous) = previous else {
         return Ok(report);
     };
-    report.status = LatestComparisonStatus::Compared {
-        previous_cards: previous.len(),
-    };
+    report.previous_cards = Some(previous.len());
     for (id, card) in current {
         match previous.get(id) {
-            None => report.added_cards += 1,
+            None => report.added_cards.push(
+                serde_json::from_value(card.clone())
+                    .with_context(|| format!("invalid summary for added card {id}"))?,
+            ),
             Some(old) if old != card => report.modified_cards += 1,
             _ => {}
         }
@@ -198,7 +176,7 @@ fn compare_cards(
         let filename = dataset_filename(environment);
         report.diff = diff
             .unified_diff()
-            .context_radius(3)
+            .context_radius(1)
             .header(&format!("a/{filename}"), &format!("b/{filename}"))
             .to_string();
     }
@@ -212,14 +190,13 @@ pub(crate) struct LatestReleaseComparison {
 }
 
 impl LatestReleaseComparison {
-    pub(crate) fn should_publish(&self) -> bool {
-        self.datasets.iter().any(|dataset| {
-            matches!(dataset.status, LatestComparisonStatus::NotFound) || dataset.has_changes()
-        })
+    pub(crate) fn has_changes(&self) -> bool {
+        self.datasets
+            .iter()
+            .any(LatestComparisonReport::has_changes)
     }
 
     pub(crate) fn write_artifacts(&self, output_dir: &Path) -> Result<()> {
-        remove_stale_diff(&output_dir.join("data.diff"))?;
         for dataset in &self.datasets {
             let diff_path = output_dir.join(dataset.diff_filename());
             if dataset.diff.is_empty() {
@@ -229,15 +206,12 @@ impl LatestReleaseComparison {
                     .with_context(|| format!("failed to write {}", diff_path.display()))?;
             }
         }
-        fs::write(
-            output_dir.join("release-changed"),
-            if self.should_publish() {
-                "true\n"
-            } else {
-                "false\n"
-            },
-        )
-        .context("failed to write release publication decision")
+        let metadata = serde_json::json!({
+            "latest_release": endpoints::endpoints()?.latest_release_url(),
+            "previous_release": self.release,
+            "has_changes": self.has_changes(),
+        });
+        crate::json::write_pretty_sorted(&output_dir.join("comparison.json"), &metadata)
     }
 }
 
@@ -251,18 +225,36 @@ fn remove_stale_diff(path: &Path) -> Result<()> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub(crate) struct ReleaseReference {
     pub(crate) tag: String,
     pub(crate) url: String,
 }
 
+impl ReleaseReference {
+    fn dataset_url(&self, environment: Environment) -> String {
+        format!(
+            "{}/{}",
+            self.url
+                .replacen("/releases/tag/", "/releases/download/", 1),
+            dataset_filename(environment)
+        )
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub(crate) struct AddedCard {
+    pub(crate) id: i64,
+    pub(crate) name: String,
+    #[serde(default, rename = "type")]
+    pub(crate) card_type: Vec<String>,
+}
+
 #[derive(Debug)]
 pub(crate) struct LatestComparisonReport {
     pub(crate) environment: Environment,
-    pub(crate) current_cards: usize,
-    pub(crate) status: LatestComparisonStatus,
-    pub(crate) added_cards: usize,
+    pub(crate) previous_cards: Option<usize>,
+    pub(crate) added_cards: Vec<AddedCard>,
     pub(crate) modified_cards: usize,
     pub(crate) removed_cards: usize,
     pub(crate) diff: String,
@@ -277,14 +269,8 @@ impl LatestComparisonReport {
     }
 
     fn has_changes(&self) -> bool {
-        self.added_cards + self.modified_cards + self.removed_cards > 0
+        !self.added_cards.is_empty() || self.modified_cards + self.removed_cards > 0
     }
-}
-
-#[derive(Debug)]
-pub(crate) enum LatestComparisonStatus {
-    Compared { previous_cards: usize },
-    NotFound,
 }
 
 #[cfg(test)]
@@ -296,7 +282,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::cards::ImageCheckSummary;
 
     struct TestDirectory(PathBuf);
 
@@ -341,8 +326,32 @@ mod tests {
                 release: None,
                 datasets: vec![report]
             }
-            .should_publish()
+            .has_changes()
         );
+    }
+
+    #[test]
+    fn added_card_details_come_from_the_same_id_comparison() {
+        let report = comparison(
+            r#"[{"id":2,"name":"old"}]"#,
+            r#"[{"id":3,"name":"third","type":["魔法"]},{"id":2,"name":"modified"},{"id":1,"name":"first","type":["怪兽","效果"]}]"#,
+        );
+        assert_eq!(
+            report.added_cards,
+            vec![
+                AddedCard {
+                    id: 1,
+                    name: "first".into(),
+                    card_type: vec!["怪兽".into(), "效果".into()]
+                },
+                AddedCard {
+                    id: 3,
+                    name: "third".into(),
+                    card_type: vec!["魔法".into()]
+                },
+            ]
+        );
+        assert_eq!(report.modified_cards, 1);
     }
 
     #[test]
@@ -358,7 +367,7 @@ mod tests {
                 &format!(r#"[{{"id":1,"name":"卡",{after}}}]"#),
             );
             assert_eq!(report.modified_cards, 1);
-            assert_eq!(report.added_cards + report.removed_cards, 0);
+            assert_eq!(report.added_cards.len() + report.removed_cards, 0);
             assert!(!report.diff.is_empty());
         }
         let report = comparison(
@@ -393,7 +402,7 @@ mod tests {
             let report = compare_cards(environment, &current, Some(&previous)).unwrap();
             assert_eq!(
                 (
-                    report.added_cards,
+                    report.added_cards.len(),
                     report.modified_cards,
                     report.removed_cards
                 ),
@@ -440,18 +449,18 @@ mod tests {
     fn empty_existing_dataset_is_a_baseline_but_first_release_is_not() {
         let cards = parse_cards(r#"[{"id":1,"name":"卡"}]"#).unwrap();
         let first = compare_cards(Environment::Ot, &cards, None).unwrap();
-        assert_eq!(first.added_cards, 0);
+        assert!(first.added_cards.is_empty());
         assert!(first.diff.is_empty());
-        assert!(matches!(first.status, LatestComparisonStatus::NotFound));
+        assert!(first.previous_cards.is_none());
         assert!(
-            LatestReleaseComparison {
+            !LatestReleaseComparison {
                 release: None,
                 datasets: vec![first]
             }
-            .should_publish()
+            .has_changes()
         );
         let added = compare_cards(Environment::Ot, &cards, Some(&Cards::new())).unwrap();
-        assert_eq!(added.added_cards, 1);
+        assert_eq!(added.added_cards.len(), 1);
         assert!(!added.diff.is_empty());
         let removed = compare_cards(Environment::Ot, &Cards::new(), Some(&cards)).unwrap();
         assert_eq!(removed.removed_cards, 1);
@@ -462,7 +471,6 @@ mod tests {
     fn writes_complete_artifact_and_removes_stale_diff() {
         let directory = TestDirectory::new();
         let diff_path = directory.0.join("ot.diff");
-        let changed_path = directory.0.join("release-changed");
         let previous = parse_cards(r#"[{"id":1,"name":"旧"}]"#).unwrap();
         let current = parse_cards(&format!(
             r#"[{{"id":1,"name":"新","text":"{}"}}]"#,
@@ -477,7 +485,11 @@ mod tests {
         };
         release.write_artifacts(&directory.0).unwrap();
         assert_eq!(fs::read_to_string(&diff_path).unwrap(), expected);
-        assert_eq!(fs::read_to_string(&changed_path).unwrap(), "true\n");
+        assert!(release.has_changes());
+        let metadata: Value =
+            serde_json::from_str(&fs::read_to_string(directory.0.join("comparison.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["has_changes"], true);
         for baseline in [None, Some(&current)] {
             fs::write(&diff_path, "stale").unwrap();
             let release = LatestReleaseComparison {
@@ -486,10 +498,13 @@ mod tests {
             };
             release.write_artifacts(&directory.0).unwrap();
             assert!(!diff_path.exists());
-            assert_eq!(
-                fs::read_to_string(&changed_path).unwrap().trim(),
-                if baseline.is_some() { "false" } else { "true" }
-            );
+            assert!(!release.has_changes());
+            let metadata: Value = serde_json::from_str(
+                &fs::read_to_string(directory.0.join("comparison.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(metadata["has_changes"], false);
+            assert_eq!(metadata["previous_release"], Value::Null);
         }
     }
 
@@ -499,7 +514,7 @@ mod tests {
         let before = parse_cards(r#"[{"id":1,"name":"旧"}]"#).unwrap();
         let after = parse_cards(r#"[{"id":1,"name":"新"}]"#).unwrap();
         for changed_environment in [Environment::Ot, Environment::Rd] {
-            for filename in ["ot.diff", "rd.diff", "data.diff"] {
+            for filename in ["ot.diff", "rd.diff"] {
                 fs::write(directory.0.join(filename), "stale").unwrap();
             }
             let datasets = [Environment::Ot, Environment::Rd]
@@ -529,10 +544,7 @@ mod tests {
                 );
             }
             assert!(!directory.0.join("data.diff").exists());
-            assert_eq!(
-                fs::read_to_string(directory.0.join("release-changed")).unwrap(),
-                "true\n"
-            );
+            assert!(release.has_changes());
         }
     }
 
@@ -547,30 +559,6 @@ mod tests {
         ] {
             assert!(parse_cards(text).is_err(), "accepted {text}");
         }
-        let directory = TestDirectory::new();
-        let path = directory.0.join("current.json");
-        fs::write(&path, "[]").unwrap();
-        let report = DatasetReport {
-            environment: Environment::Ot,
-            path,
-            cards_written: 0,
-            cards_skipped: 0,
-            image_summary: ImageCheckSummary::default(),
-            image_failures: vec![],
-        };
-        let options = Options {
-            previous_release_dir: Some(directory.0.clone()),
-            ..Options::default()
-        };
-        assert!(compare_latest_release(&[&report], &options).is_err());
-        fs::write(directory.0.join("ot.json"), "broken JSON").unwrap();
-        assert!(compare_latest_release(&[&report], &options).is_err());
-        fs::write(directory.0.join("ot.json"), "[]").unwrap();
-        assert!(
-            !compare_latest_release(&[&report], &options)
-                .unwrap()
-                .should_publish()
-        );
     }
 
     #[test]
@@ -584,14 +572,167 @@ mod tests {
             "https://github.com/arshtyi/ygo-cards/releases/tag/0.0.2"
         );
         assert_eq!(
-            pinned_dataset_url(
-                "https://github.com/arshtyi/ygo-cards/releases/latest/download/ot.json",
-                &release
-            )
-            .unwrap(),
+            release.dataset_url(Environment::Ot),
             "https://github.com/arshtyi/ygo-cards/releases/download/0.0.2/ot.json"
         );
         assert!(release_reference("https://github.com/arshtyi/ygo-cards/releases/latest").is_err());
-        assert!(pinned_dataset_url("https://example.test/ot.json", &release).is_err());
+    }
+
+    fn serve(
+        responses: Vec<(&'static str, &'static str, &'static str)>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            time::Instant,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            for (request, headers, body) in responses {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(10))
+                        }
+                        Err(error) => panic!("missing request {request}: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut line = String::new();
+                BufReader::new(&mut stream).read_line(&mut line).unwrap();
+                assert_eq!(line.trim(), request);
+                write!(
+                    stream,
+                    "HTTP/1.1 {headers}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        (base, thread)
+    }
+
+    fn empty_dataset(directory: &TestDirectory, environment: Environment) -> DatasetReport {
+        let path = directory.0.join(dataset_filename(environment));
+        fs::write(&path, "[]").unwrap();
+        DatasetReport {
+            environment,
+            path,
+            cards_written: 0,
+            cards_skipped: 0,
+            image_summary: crate::cards::ImageCheckSummary::default(),
+        }
+    }
+
+    #[test]
+    fn resolves_latest_once_and_downloads_both_fixed_assets() {
+        let (base, server) = serve(vec![
+            (
+                "HEAD /releases/latest HTTP/1.1",
+                "302 Found\r\nLocation: /releases/tag/0.0.2",
+                "",
+            ),
+            ("HEAD /releases/tag/0.0.2 HTTP/1.1", "200 OK", ""),
+            (
+                "GET /releases/download/0.0.2/ot.json HTTP/1.1",
+                "200 OK",
+                "[]",
+            ),
+            (
+                "GET /releases/download/0.0.2/rd.json HTTP/1.1",
+                "200 OK",
+                "[]",
+            ),
+        ]);
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let release = resolve_latest_release(&client, &format!("{base}/releases/latest")).unwrap();
+        let directory = TestDirectory::new();
+        let ot = empty_dataset(&directory, Environment::Ot);
+        let rd = empty_dataset(&directory, Environment::Rd);
+        let comparison = compare_release(&[&ot, &rd], &client, release).unwrap();
+        assert!(!comparison.has_changes());
+        assert_eq!(comparison.release.unwrap().tag, "0.0.2");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn only_a_missing_latest_release_skips_comparison() {
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let (base, server) = serve(vec![(
+            "HEAD /releases/latest HTTP/1.1",
+            "404 Not Found",
+            "",
+        )]);
+        assert!(
+            resolve_latest_release(&client, &format!("{base}/releases/latest"))
+                .unwrap()
+                .is_none()
+        );
+        server.join().unwrap();
+        for responses in [
+            vec![(
+                "HEAD /releases/latest HTTP/1.1",
+                "500 Internal Server Error",
+                "",
+            )],
+            vec![
+                (
+                    "HEAD /releases/latest HTTP/1.1",
+                    "302 Found\r\nLocation: /releases/tag/0.0.2",
+                    "",
+                ),
+                ("HEAD /releases/tag/0.0.2 HTTP/1.1", "404 Not Found", ""),
+            ],
+        ] {
+            let (base, server) = serve(responses);
+            assert!(resolve_latest_release(&client, &format!("{base}/releases/latest")).is_err());
+            server.join().unwrap();
+        }
+        let directory = TestDirectory::new();
+        let ot = empty_dataset(&directory, Environment::Ot);
+        for (status, body) in [
+            ("404 Not Found", ""),
+            ("500 Internal Server Error", ""),
+            ("200 OK", "bad JSON"),
+        ] {
+            let (base, server) = serve(vec![(
+                "GET /releases/download/0.0.2/ot.json HTTP/1.1",
+                status,
+                body,
+            )]);
+            let release = release_reference(&format!("{base}/releases/tag/0.0.2")).unwrap();
+            assert!(compare_release(&[&ot], &client, Some(release)).is_err());
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn patches_use_only_one_context_line() {
+        let report = comparison(
+            r#"[{"id":1,"name":"Card","a":1,"b":2,"c":3,"d":4}]"#,
+            r#"[{"id":1,"name":"Card","a":1,"b":9,"c":3,"d":4}]"#,
+        );
+        assert!(
+            report
+                .diff
+                .contains("     \"a\": 1,\n-    \"b\": 2,\n+    \"b\": 9,\n     \"c\": 3,\n")
+        );
+        assert!(!report.diff.contains("\"d\""));
+        assert!(!report.diff.contains("\"id\""));
     }
 }

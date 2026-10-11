@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     thread,
     time::Duration,
 };
@@ -12,7 +12,7 @@ use reqwest::{
     header::{CONTENT_TYPE, RANGE},
 };
 
-use super::{FailedImageCheck, GenerationOptions, ImageCheckFailure, ImageCheckSummary};
+use super::{GenerationOptions, ImageCheckSummary};
 use crate::{
     diagnostics::{self, Diagnostic},
     environment::Environment,
@@ -26,7 +26,6 @@ pub(crate) struct ImageResolver {
     mode: ImageMode,
     cache: HashMap<i64, ImageCheck>,
     summary: ImageCheckSummary,
-    failures: Vec<ImageCheckFailure>,
     progress: Option<ProgressState>,
 }
 
@@ -64,7 +63,6 @@ impl ImageResolver {
                 skip_failures: options.skip_image_failures,
                 ..ImageCheckSummary::default()
             },
-            failures: Vec::new(),
             progress: None,
         })
     }
@@ -87,17 +85,10 @@ impl ImageResolver {
             return Some(id);
         }
 
-        let primary = self.failed_check(id, primary);
-        let alias_check = if alias > 0 && alias != id {
-            let alias_result = self.check(alias);
-            if alias_result.is_found() {
-                self.summary.alias_found += 1;
-                return Some(alias);
-            }
-            Some(self.failed_check(alias, alias_result))
-        } else {
-            None
-        };
+        if alias > 0 && alias != id && self.check(alias).is_found() {
+            self.summary.alias_found += 1;
+            return Some(alias);
+        }
 
         self.summary.missing += 1;
         let card_skipped = self.summary.skip_failures;
@@ -117,15 +108,6 @@ impl ImageResolver {
                 )
                 .reason("No primary or distinct alias image candidate passed validation"),
         );
-        self.failures.push(ImageCheckFailure {
-            environment,
-            id,
-            name: name.to_string(),
-            alias,
-            primary,
-            alias_check,
-            card_skipped,
-        });
         if card_skipped {
             self.summary.cards_skipped += 1;
             None
@@ -138,12 +120,8 @@ impl ImageResolver {
         self.summary
     }
 
-    pub(crate) fn failures(&self) -> &[ImageCheckFailure] {
-        &self.failures
-    }
-
     pub(crate) fn start_progress(&mut self, total: usize, label: &'static str) {
-        if matches!(self.mode, ImageMode::UseCardId) || total == 0 {
+        if matches!(self.mode, ImageMode::UseCardId) || total == 0 || !io::stdout().is_terminal() {
             return;
         }
 
@@ -192,22 +170,12 @@ impl ImageResolver {
 
     fn check(&mut self, id: i64) -> ImageCheck {
         if let Some(result) = self.cache.get(&id) {
-            self.summary.cache_hits += 1;
             return result.clone();
         }
 
         let result = self.image_exists(id);
-        match &result {
-            ImageCheck::Found => {
-                self.summary.unique_urls_found += 1;
-            }
-            ImageCheck::Missing(_) => {
-                self.summary.unique_urls_missing += 1;
-            }
-            ImageCheck::NetworkError(_) => {
-                self.summary.network_errors += 1;
-                self.summary.unique_urls_missing += 1;
-            }
+        if matches!(result, ImageCheck::NetworkError(_)) {
+            self.summary.network_errors += 1;
         }
         if let Some((kind, reason)) = result.failure_details() {
             let url = self.image_url(id).unwrap_or_else(|| {
@@ -232,39 +200,6 @@ impl ImageResolver {
         }
         self.cache.insert(id, result.clone());
         result
-    }
-
-    fn failed_check(&self, id: i64, result: ImageCheck) -> FailedImageCheck {
-        let url = self.image_url(id).unwrap_or_else(|| {
-            diagnostics::record(
-                Diagnostic::error(
-                    "internal.image-state",
-                    "Image checker entered an inconsistent state",
-                )
-                .context("Image ID", id)
-                .reason("A failed check has no image URL")
-                .suggestion("Report this as an internal ygo-cards bug"),
-            );
-            format!("{id}.jpg")
-        });
-        let reason = result.failure_reason().unwrap_or_else(|| {
-            diagnostics::record(
-                Diagnostic::error(
-                    "internal.image-state",
-                    "Image checker entered an inconsistent state",
-                )
-                .context("Image ID", id)
-                .reason("A successful result was recorded as a failed check")
-                .suggestion("Report this as an internal ygo-cards bug"),
-            );
-            String::from("internal error: missing failure reason")
-        });
-
-        FailedImageCheck {
-            image_id: id,
-            url,
-            reason,
-        }
     }
 
     fn image_exists(&self, id: i64) -> ImageCheck {
@@ -346,13 +281,6 @@ enum ImageCheck {
 impl ImageCheck {
     fn is_found(&self) -> bool {
         matches!(self, Self::Found)
-    }
-
-    fn failure_reason(self) -> Option<String> {
-        match self {
-            Self::Found => None,
-            Self::Missing(reason) | Self::NetworkError(reason) => Some(reason),
-        }
     }
 
     fn failure_details(&self) -> Option<(&'static str, &str)> {
@@ -471,6 +399,7 @@ mod tests {
         GenerationOptions {
             check_images,
             skip_image_failures,
+            ..GenerationOptions::default()
         }
     }
 
@@ -512,16 +441,6 @@ mod tests {
         assert_eq!(resolver.resolve(Environment::Ot, 100, "Card", 200), Some(0));
         assert_eq!(resolver.summary().missing, 1);
         assert_eq!(resolver.summary().cards_skipped, 0);
-        let failure = &resolver.failures()[0];
-        assert_eq!(failure.id, 100);
-        assert_eq!(failure.alias, 200);
-        assert_eq!(failure.primary.image_id, 100);
-        assert_eq!(failure.primary.reason, "HTTP 404 Not Found");
-        assert_eq!(
-            failure.alias_check.as_ref().unwrap().reason,
-            "request timed out"
-        );
-        assert!(!failure.card_skipped);
     }
 
     #[test]
@@ -537,7 +456,6 @@ mod tests {
         assert_eq!(resolver.resolve(Environment::Ot, 100, "Card", 200), None);
         assert_eq!(resolver.summary().missing, 1);
         assert_eq!(resolver.summary().cards_skipped, 1);
-        assert!(resolver.failures()[0].card_skipped);
     }
 
     #[test]
@@ -553,7 +471,7 @@ mod tests {
             Some(200)
         );
         assert_eq!(resolver.summary().alias_found, 1);
-        assert!(resolver.failures().is_empty());
+        assert_eq!(resolver.summary().missing, 0);
     }
 
     #[test]

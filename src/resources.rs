@@ -75,33 +75,13 @@ struct Resource<'a> {
     path: &'static [&'static str],
 }
 
-#[derive(Debug)]
-pub(crate) struct DownloadedResource {
-    pub(crate) path: PathBuf,
-    pub(crate) bytes: u64,
-    pub(crate) attempts: u32,
-}
-
-pub(crate) fn download_all() -> Result<Vec<DownloadedResource>> {
-    let endpoints = endpoints::endpoints()?;
-    let client = resource_client()?;
-
-    RESOURCE_DEFINITIONS
-        .iter()
-        .map(|definition| {
-            let resource = definition.resolve(endpoints);
-            download_resource(&client, &resource)
-        })
-        .collect()
-}
-
-pub(crate) fn ensure_all() -> Result<()> {
+pub(crate) fn prepare(refresh: bool) -> Result<()> {
     let endpoints = endpoints::endpoints()?;
     let client = resource_client()?;
 
     for definition in RESOURCE_DEFINITIONS {
         let resource = definition.resolve(endpoints);
-        if validate_asset(&asset_path(&resource)).is_ok() {
+        if !refresh && validate_asset(&asset_path(&resource)).is_ok() {
             continue;
         }
 
@@ -123,7 +103,7 @@ fn resource_client() -> Result<Client> {
         .context("failed to build resource download HTTP client")
 }
 
-fn download_resource(client: &Client, resource: &Resource<'_>) -> Result<DownloadedResource> {
+fn download_resource(client: &Client, resource: &Resource<'_>) -> Result<()> {
     let path = asset_path(resource);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -146,13 +126,7 @@ fn download_resource(client: &Client, resource: &Resource<'_>) -> Result<Downloa
             );
         }
         match download_resource_once(client, resource, &path, &temp_path) {
-            Ok(bytes) => {
-                return Ok(DownloadedResource {
-                    path,
-                    bytes,
-                    attempts: attempt,
-                });
-            }
+            Ok(()) => return Ok(()),
             Err(error) if attempt < MAX_DOWNLOAD_ATTEMPTS => {
                 let delay = backoff_delay(attempt);
                 diagnostics::record(
@@ -194,7 +168,7 @@ fn download_resource_once(
     resource: &Resource<'_>,
     path: &Path,
     temp_path: &Path,
-) -> Result<u64> {
+) -> Result<()> {
     let mut response = send_with_retries(client, resource)?;
     let expected_length = response.content_length();
     let bytes = write_response(&mut response, temp_path)
@@ -208,7 +182,7 @@ fn download_resource_once(
         )
     })?;
 
-    Ok(bytes)
+    Ok(())
 }
 
 fn send_with_retries(client: &Client, resource: &Resource<'_>) -> Result<Response> {

@@ -68,7 +68,12 @@ pub(crate) fn generate(options: GenerationOptions) -> Result<DatasetReport> {
     ensure_rd_mappings()?;
     let forbidden_list = read_forbidden_list(Path::new(FORBIDDEN_LIST_PATH))?;
     let mut images = ImageResolver::new(options)?;
-    let collection = read_cards(Path::new(DATABASE_PATH), &forbidden_list, &mut images)?;
+    let collection = read_cards(
+        Path::new(DATABASE_PATH),
+        &forbidden_list,
+        &mut images,
+        options.limit.map_or(usize::MAX, |limit| limit.get()),
+    )?;
     let path = PathBuf::from(OUTPUT_PATH);
 
     write_dataset(&path, &collection.cards)?;
@@ -79,7 +84,6 @@ pub(crate) fn generate(options: GenerationOptions) -> Result<DatasetReport> {
         cards_written: collection.cards.len(),
         cards_skipped: collection.skipped,
         image_summary: images.summary(),
-        image_failures: images.failures().to_vec(),
     })
 }
 
@@ -87,6 +91,7 @@ fn read_cards(
     db_path: &Path,
     forbidden_list: &ForbiddenList,
     images: &mut ImageResolver,
+    row_limit: usize,
 ) -> Result<CardCollection<Card>> {
     let connection = Connection::open(db_path)
         .with_context(|| format!("failed to open RD cards database {}", db_path.display()))?;
@@ -106,7 +111,7 @@ fn read_cards(
             |row| row.get::<_, i64>(0),
         )
         .context("failed to count RD card rows")? as usize;
-    images.start_progress(total_rows, "checking RD images");
+    images.start_progress(total_rows.min(row_limit), "checking RD images");
 
     let mut statement = connection
         .prepare(
@@ -143,7 +148,7 @@ fn read_cards(
 
     let mut cards = Vec::new();
     let mut cards_skipped = 0;
-    for (row_index, row) in rows.enumerate() {
+    for (row_index, row) in rows.take(row_limit).enumerate() {
         match row {
             Ok(row) => {
                 if let Some(card) = build_card(row, forbidden_list, images) {

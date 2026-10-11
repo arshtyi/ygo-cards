@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::num::NonZeroUsize;
 
 use clap::Parser;
 
@@ -8,6 +8,10 @@ use clap::Parser;
     about = "Generate normalized Yu-Gi-Oh! card data for OT and RD environments"
 )]
 pub(crate) struct Options {
+    /// Test at most N input cards per dataset; skip release comparison and diffs
+    #[arg(long, value_name = "N")]
+    pub(crate) limit: Option<NonZeroUsize>,
+
     /// Download fresh upstream resources before generating card data
     #[arg(long)]
     pub(crate) refresh_resources: bool,
@@ -19,18 +23,6 @@ pub(crate) struct Options {
     /// Skip cards whose primary and alias images both fail (requires --check-images)
     #[arg(long, requires = "check_images")]
     pub(crate) skip_image_failures: bool,
-
-    /// Compare with ot.json and rd.json from a fixed previous release directory
-    #[arg(long, conflicts_with = "no_previous_release")]
-    pub(crate) previous_release_dir: Option<PathBuf>,
-
-    /// Link to the fixed previous release in the report
-    #[arg(long, requires = "previous_release_dir")]
-    pub(crate) previous_release_url: Option<String>,
-
-    /// Generate an initial release without a previous-release comparison
-    #[arg(long)]
-    pub(crate) no_previous_release: bool,
 }
 
 impl Options {
@@ -59,13 +51,15 @@ mod tests {
                 "--refresh-resources",
                 "--check-images",
                 "--skip-image-failures",
+                "--limit",
+                "10",
             ])
             .unwrap(),
             Options {
+                limit: NonZeroUsize::new(10),
                 refresh_resources: true,
                 check_images: true,
                 skip_image_failures: true,
-                ..Options::default()
             }
         );
     }
@@ -81,53 +75,23 @@ mod tests {
     }
 
     #[test]
-    fn requires_an_unambiguous_previous_release_source() {
-        assert!(
-            Options::try_parse_from([
-                "ygo-cards",
-                "--previous-release-dir",
-                "baseline",
-                "--no-previous-release"
-            ])
-            .is_err()
-        );
-        assert!(
-            Options::try_parse_from([
-                "ygo-cards",
-                "--previous-release-url",
-                "https://example.test/releases/tag/1"
-            ])
-            .is_err()
-        );
-        let options = Options::try_parse_from([
-            "ygo-cards",
-            "--previous-release-dir",
-            "baseline",
-            "--previous-release-url",
-            "https://example.test/releases/tag/1",
-        ])
-        .unwrap();
-        assert_eq!(
-            options.previous_release_dir,
-            Some(PathBuf::from("baseline"))
-        );
-        assert!(!options.no_previous_release);
-        assert!(
-            Options::try_parse_from(["ygo-cards", "--no-previous-release"])
-                .unwrap()
-                .no_previous_release
-        );
-    }
-
-    #[test]
     fn provides_help() {
         let error = Options::try_parse_from(["ygo-cards", "--help"]).unwrap_err();
 
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
+        assert!(help.contains("--limit <N>"));
         assert!(help.contains("--refresh-resources"));
         assert!(help.contains("--check-images"));
         assert!(help.contains("--skip-image-failures"));
+        assert!(!help.contains("--publish"));
+    }
+
+    #[test]
+    fn rejects_invalid_limits() {
+        for value in ["0", "-1", "1.5", "all"] {
+            assert!(Options::try_parse_from(["ygo-cards", "--limit", value]).is_err());
+        }
     }
 
     #[test]

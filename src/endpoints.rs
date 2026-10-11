@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
 
-use crate::{config::read_json_config, environment::Environment};
+use crate::config::read_json_config;
 
 const ENDPOINTS_PATH: &str = "config/endpoints.json";
 
@@ -11,7 +11,6 @@ const ENDPOINTS_PATH: &str = "config/endpoints.json";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Endpoints {
     source_resources: SourceResourceUrls,
-    published_datasets: PublishedDatasetUrls,
     latest_release: String,
     card_search_url: String,
     card_image_base_url: String,
@@ -25,13 +24,6 @@ struct SourceResourceUrls {
     ot_genesys_list: String,
     rd_cards_database: String,
     rd_forbidden_list: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PublishedDatasetUrls {
-    ot: String,
-    rd: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,13 +51,6 @@ impl Endpoints {
             SourceResource::OtGenesysList => &self.source_resources.ot_genesys_list,
             SourceResource::RdCardsDatabase => &self.source_resources.rd_cards_database,
             SourceResource::RdForbiddenList => &self.source_resources.rd_forbidden_list,
-        }
-    }
-
-    pub(crate) fn published_dataset_url(&self, environment: Environment) -> &str {
-        match environment {
-            Environment::Ot => &self.published_datasets.ot,
-            Environment::Rd => &self.published_datasets.rd,
         }
     }
 
@@ -102,8 +87,6 @@ impl Endpoints {
             "sourceResources.rdForbiddenList",
             &self.source_resources.rd_forbidden_list,
         )?;
-        validate_url("publishedDatasets.ot", &self.published_datasets.ot)?;
-        validate_url("publishedDatasets.rd", &self.published_datasets.rd)?;
         validate_url("latestRelease", &self.latest_release)?;
         validate_url("cardSearchUrl", &self.card_search_url)?;
         validate_url("cardImageBaseUrl", &self.card_image_base_url)?;
@@ -143,11 +126,6 @@ mod tests {
             config
                 .source_url(SourceResource::OtCardsDatabase)
                 .ends_with("/cards.cdb")
-        );
-        assert!(
-            config
-                .published_dataset_url(Environment::Rd)
-                .ends_with("/rd.json")
         );
         assert!(config.latest_release_url().ends_with("/releases/latest"));
         assert!(

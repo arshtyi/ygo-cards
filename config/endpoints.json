@@ -6,10 +6,6 @@
     "rdCardsDatabase": "https://code.moenext.com/mycard/ygopro-rush-duel/-/raw/master/RD%20Standard.cdb",
     "rdForbiddenList": "https://code.moenext.com/mycard/ygopro-rush-duel/-/raw/master/lflist.conf"
   },
-  "publishedDatasets": {
-    "ot": "https://github.com/arshtyi/ygo-cards/releases/latest/download/ot.json",
-    "rd": "https://github.com/arshtyi/ygo-cards/releases/latest/download/rd.json"
-  },
   "latestRelease": "https://github.com/arshtyi/ygo-cards/releases/latest",
   "cardSearchUrl": "https://ygocdb.com/api/v0/",
   "cardImageBaseUrl": "https://images.ygoprodeck.com/images/cards_cropped"
