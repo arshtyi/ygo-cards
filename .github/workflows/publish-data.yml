@@ -30,14 +30,17 @@ jobs:
             - name: Install just
               run: cargo install just --locked
 
-            - name: Generate and publish changed card data
-              env:
-                  GH_TOKEN: ${{ github.token }}
+            - name: Generate card data
               run: |
                   set -euo pipefail
                   trap 'if [[ -f output/report.md ]]; then cat output/report.md >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
                   just generate --refresh-resources --check-images
 
+            - name: Publish changed card data
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
                   jq -e --arg source "https://github.com/$GITHUB_REPOSITORY/releases/latest" \
                       '.latest_release == $source' output/comparison.json > /dev/null
                   if jq -e '.previous_release != null and .has_changes == false' output/comparison.json > /dev/null; then

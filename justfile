@@ -9,19 +9,15 @@ fmt *args:
     cargo fmt --all -- "$@"
 
 # Run Clippy with warnings treated as errors.
-lint:
-    cargo clippy --locked --all-targets -- -D warnings
+lint *args:
+    cargo clippy --locked --all-targets "$@" -- -D warnings
 
-# Run all tests.
-test:
-    cargo test --locked
+# Run tests, optionally filtering by name or passing test runner arguments.
+test *args:
+    cargo test --locked "$@"
 
 # Run formatting, lint, and test checks.
 check: (fmt "--check") lint test
-
-# Run the debug executable with optional arguments.
-run *args:
-    cargo run --locked -- "$@"
 
 # Generate datasets with the release executable and optional arguments.
 generate *args:

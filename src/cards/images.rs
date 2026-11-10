@@ -305,13 +305,13 @@ fn image_url(base_url: &str, id: i64) -> String {
 }
 
 fn classify_image_response(response: &Response) -> ImageCheck {
-    if is_image_response(response) {
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    if is_image_response(response.status(), content_type) {
         ImageCheck::Found
     } else {
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok());
         ImageCheck::Missing(non_image_response_reason(response.status(), content_type))
     }
 }
@@ -382,13 +382,24 @@ fn send_image_request_with_retries(client: &Client, method: Method, url: &str) -
     bail!("image request loop ended unexpectedly: method={method} url={url}")
 }
 
-fn is_image_response(response: &Response) -> bool {
-    response.status().is_success()
-        && response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|content_type| content_type.starts_with("image/"))
+fn is_image_response(status: StatusCode, content_type: Option<&str>) -> bool {
+    if !status.is_success() {
+        return false;
+    }
+
+    let Some(content_type) = content_type else {
+        return false;
+    };
+    let media_type = content_type.split(';').next().unwrap_or_default().trim();
+    let Some((kind, subtype)) = media_type.split_once('/') else {
+        return false;
+    };
+
+    kind.eq_ignore_ascii_case("image")
+        && !subtype.is_empty()
+        && subtype
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
 }
 
 #[cfg(test)]
@@ -412,19 +423,32 @@ mod tests {
     }
 
     #[test]
-    fn describes_non_image_responses() {
-        assert_eq!(
-            non_image_response_reason(StatusCode::NOT_FOUND, Some("text/html")),
-            "HTTP 404 Not Found"
-        );
-        assert_eq!(
-            non_image_response_reason(StatusCode::OK, Some("text/html")),
-            "HTTP 200 OK; Content-Type text/html is not an image"
-        );
-        assert_eq!(
-            non_image_response_reason(StatusCode::OK, None),
-            "HTTP 200 OK; missing or invalid Content-Type"
-        );
+    fn recognizes_case_insensitive_image_media_types() {
+        for content_type in ["image/jpeg", "IMAGE/JPEG", "Image/Svg+Xml; charset=utf-8"] {
+            assert!(is_image_response(StatusCode::OK, Some(content_type)));
+            assert!(is_image_response(
+                StatusCode::PARTIAL_CONTENT,
+                Some(content_type)
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_missing_invalid_or_unsuccessful_image_media_types() {
+        for content_type in [
+            None,
+            Some("text/html"),
+            Some("image/"),
+            Some("image/; charset=utf-8"),
+            Some("image/jpeg/extra"),
+            Some("image/jpeg extra"),
+        ] {
+            assert!(!is_image_response(StatusCode::OK, content_type));
+        }
+        assert!(!is_image_response(
+            StatusCode::NOT_FOUND,
+            Some("image/jpeg")
+        ));
     }
 
     #[test]

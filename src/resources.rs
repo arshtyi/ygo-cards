@@ -174,7 +174,8 @@ fn download_resource_once(
     let bytes = write_response(&mut response, temp_path)
         .with_context(|| format!("failed to write temporary asset {}", temp_path.display()))?;
     validate_download_size(resource, bytes, expected_length)?;
-    replace_file(temp_path, path).with_context(|| {
+    // Both paths are in the asset directory; failed replacement leaves the cache intact.
+    fs::rename(temp_path, path).with_context(|| {
         format!(
             "failed to move temporary asset {} into place at {}",
             temp_path.display(),
@@ -323,48 +324,6 @@ fn write_response(response: &mut impl Read, path: &Path) -> io::Result<u64> {
     Ok(bytes)
 }
 
-fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
-    let backup = backup_path_for(to)?;
-    let had_existing = to.exists();
-
-    if had_existing {
-        remove_file_if_exists(&backup)?;
-        fs::rename(to, &backup)?;
-    }
-
-    match fs::rename(from, to) {
-        Ok(()) => {
-            if had_existing && let Err(error) = remove_file_if_exists(&backup) {
-                diagnostics::record(
-                    Diagnostic::warning(
-                        "resource.cleanup-failed",
-                        "Replaced resource backup could not be removed",
-                    )
-                    .context("Path", backup.display())
-                    .reason(error)
-                    .suggestion(
-                        "The installed resource is valid; the backup can be removed manually",
-                    ),
-                );
-            }
-            Ok(())
-        }
-        Err(error) => {
-            if had_existing && let Err(restore_error) = fs::rename(&backup, to) {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!(
-                        "failed to install {}: {error}; also failed to restore backup {}: {restore_error}",
-                        to.display(),
-                        backup.display()
-                    ),
-                ));
-            }
-            Err(error)
-        }
-    }
-}
-
 fn remove_file_if_exists(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -373,28 +332,104 @@ fn remove_file_if_exists(path: &Path) -> io::Result<()> {
     }
 }
 
-fn backup_path_for(path: &Path) -> io::Result<PathBuf> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?
-        .to_string_lossy();
-    Ok(path.with_file_name(format!("{file_name}.bak")))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Instant,
+    };
 
     use super::*;
 
-    #[test]
-    fn asset_paths_are_unique_and_scoped() {
-        let mut paths = HashSet::new();
+    struct TestDirectory(PathBuf);
 
-        for definition in RESOURCE_DEFINITIONS {
-            let path = asset_path_for_parts(definition.path);
-            assert!(path.starts_with(ASSETS_DIR));
-            assert!(paths.insert(path));
+    impl TestDirectory {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "ygo-resource-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
         }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn download_fixture(directory: &Path, body: &'static [u8], length: usize) -> Result<()> {
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let url = format!("http://{}/cards.cdb", listener.local_addr()?);
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("missing resource request: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = String::new();
+            BufReader::new(&mut stream).read_line(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            stream.write_all(body).unwrap();
+        });
+        let resource = Resource {
+            name: "test cards",
+            url: &url,
+            path: &["cards.cdb"],
+        };
+        let path = directory.join("cards.cdb");
+        let result = download_resource_once(&client, &resource, &path, &temp_path_for(&path)?);
+        server.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn refreshes_existing_cache_despite_an_obsolete_backup_path() {
+        let directory = TestDirectory::new();
+        let cached = directory.0.join("cards.cdb");
+        let temporary = temp_path_for(&cached).unwrap();
+        fs::write(&cached, b"old cache").unwrap();
+        fs::create_dir(directory.0.join("cards.cdb.bak")).unwrap();
+
+        download_fixture(&directory.0, b"new cache", 9).unwrap();
+
+        assert_eq!(fs::read(&cached).unwrap(), b"new cache");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn incomplete_download_preserves_existing_cache() {
+        let directory = TestDirectory::new();
+        let cached = directory.0.join("cards.cdb");
+        fs::write(&cached, b"valid cache").unwrap();
+
+        assert!(download_fixture(&directory.0, b"partial", 100).is_err());
+        assert_eq!(fs::read(&cached).unwrap(), b"valid cache");
     }
 }

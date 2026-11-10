@@ -11,9 +11,8 @@ Available recipes:
     default        # List available commands.
     fmt *args      # Format Rust sources, or check formatting with --check.
     generate *args # Generate datasets with the release executable and optional arguments.
-    lint           # Run Clippy with warnings treated as errors.
-    run *args      # Run the debug executable with optional arguments.
-    test           # Run all tests.
+    lint *args     # Run Clippy with warnings treated as errors.
+    test *args     # Run tests, optionally filtering by name or passing test runner arguments.
 ```
 
 ## Outputs

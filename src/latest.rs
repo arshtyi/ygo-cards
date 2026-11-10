@@ -37,17 +37,17 @@ fn compare_release(
             let current = read_cards(&report.path)?;
             let previous = if let Some(release) = &release {
                 let url = release.dataset_url(report.environment);
-                let text = client
+                let bytes = client
                     .get(&url)
                     .send()
                     .with_context(|| format!("failed to download previous dataset {url}"))?
                     .error_for_status()
                     .with_context(|| format!("previous release dataset is unavailable: {url}"))?
-                    .text()?;
-                Some(
-                    parse_cards(&text)
-                        .with_context(|| format!("invalid previous dataset {url}"))?,
-                )
+                    .bytes()
+                    .with_context(|| format!("failed to read previous dataset {url}"))?;
+                let text = std::str::from_utf8(&bytes)
+                    .with_context(|| format!("invalid previous dataset {url}"))?;
+                Some(parse_cards(text).with_context(|| format!("invalid previous dataset {url}"))?)
             } else {
                 None
             };
@@ -71,6 +71,13 @@ fn resolve_latest_release(
     let response = response
         .error_for_status()
         .context("latest release is unavailable")?;
+    // GitHub redirects latest to the same repository's release list before its first release.
+    if response.status().is_success()
+        && let Some(repository) = url.strip_suffix("/releases/latest")
+        && response.url().as_str().strip_suffix("/releases") == Some(repository)
+    {
+        return Ok(None);
+    }
     release_reference(response.url().as_str()).map(Some)
 }
 
@@ -155,7 +162,7 @@ fn compare_cards(
     for (id, card) in current {
         match previous.get(id) {
             None => report.added_cards.push(
-                serde_json::from_value(card.clone())
+                AddedCard::deserialize(card)
                     .with_context(|| format!("invalid summary for added card {id}"))?,
             ),
             Some(old) if old != card => report.modified_cards += 1,
@@ -579,7 +586,11 @@ mod tests {
     }
 
     fn serve(
-        responses: Vec<(&'static str, &'static str, &'static str)>,
+        responses: Vec<(
+            &'static str,
+            &'static str,
+            impl AsRef<[u8]> + Send + 'static,
+        )>,
     ) -> (String, std::thread::JoinHandle<()>) {
         use std::{
             io::{BufRead, BufReader, Write},
@@ -591,6 +602,7 @@ mod tests {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let thread = std::thread::spawn(move || {
             for (request, headers, body) in responses {
+                let body = body.as_ref();
                 let deadline = Instant::now() + Duration::from_secs(5);
                 let mut stream = loop {
                     match listener.accept() {
@@ -612,10 +624,11 @@ mod tests {
                 assert_eq!(line.trim(), request);
                 write!(
                     stream,
-                    "HTTP/1.1 {headers}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {headers}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 )
                 .unwrap();
+                stream.write_all(body).unwrap();
             }
         });
         (base, thread)
@@ -668,6 +681,51 @@ mod tests {
     }
 
     #[test]
+    fn first_release_redirect_writes_metadata_without_a_baseline() {
+        let (base, server) = serve(vec![
+            (
+                "HEAD /owner/repo/releases/latest HTTP/1.1",
+                "302 Found\r\nLocation: /owner/repo/releases",
+                "",
+            ),
+            ("HEAD /owner/repo/releases HTTP/1.1", "200 OK", ""),
+        ]);
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let release =
+            resolve_latest_release(&client, &format!("{base}/owner/repo/releases/latest")).unwrap();
+        server.join().unwrap();
+
+        let directory = TestDirectory::new();
+        let mut ot = empty_dataset(&directory, Environment::Ot);
+        let mut rd = empty_dataset(&directory, Environment::Rd);
+        for dataset in [&mut ot, &mut rd] {
+            fs::write(&dataset.path, r#"[{"id":1,"name":"First card"}]"#).unwrap();
+            dataset.cards_written = 1;
+        }
+        for filename in ["ot.diff", "rd.diff"] {
+            fs::write(directory.0.join(filename), "stale").unwrap();
+        }
+
+        // The HTTP fixture has stopped: first releases must not download baseline assets.
+        let comparison = compare_release(&[&ot, &rd], &client, release).unwrap();
+        comparison.write_artifacts(&directory.0).unwrap();
+
+        let metadata: Value =
+            serde_json::from_str(&fs::read_to_string(directory.0.join("comparison.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["previous_release"], Value::Null);
+        assert_eq!(metadata["has_changes"], false);
+        for dataset in &comparison.datasets {
+            assert!(dataset.previous_cards.is_none());
+            assert!(dataset.added_cards.is_empty());
+            assert!(!directory.0.join(dataset.diff_filename()).exists());
+        }
+    }
+
+    #[test]
     fn only_a_missing_latest_release_skips_comparison() {
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
@@ -698,6 +756,22 @@ mod tests {
                 ),
                 ("HEAD /releases/tag/0.0.2 HTTP/1.1", "404 Not Found", ""),
             ],
+            vec![
+                (
+                    "HEAD /releases/latest HTTP/1.1",
+                    "302 Found\r\nLocation: /releases",
+                    "",
+                ),
+                ("HEAD /releases HTTP/1.1", "500 Internal Server Error", ""),
+            ],
+            vec![
+                (
+                    "HEAD /releases/latest HTTP/1.1",
+                    "302 Found\r\nLocation: /other/releases",
+                    "",
+                ),
+                ("HEAD /other/releases HTTP/1.1", "200 OK", ""),
+            ],
         ] {
             let (base, server) = serve(responses);
             assert!(resolve_latest_release(&client, &format!("{base}/releases/latest")).is_err());
@@ -719,6 +793,27 @@ mod tests {
             assert!(compare_release(&[&ot], &client, Some(release)).is_err());
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_in_previous_dataset() {
+        let (base, server) = serve(vec![(
+            "GET /releases/download/0.0.2/ot.json HTTP/1.1",
+            "200 OK",
+            b"[{\"id\":1,\"name\":\"\xff\"}]",
+        )]);
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let directory = TestDirectory::new();
+        let ot = empty_dataset(&directory, Environment::Ot);
+        let release = release_reference(&format!("{base}/releases/tag/0.0.2")).unwrap();
+
+        let error = compare_release(&[&ot], &client, Some(release)).unwrap_err();
+
+        assert!(error.to_string().contains("invalid previous dataset"));
+        server.join().unwrap();
     }
 
     #[test]

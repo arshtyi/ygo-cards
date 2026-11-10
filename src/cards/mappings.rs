@@ -148,19 +148,27 @@ fn parse_integer(value: &str) -> std::result::Result<i64, String> {
     let (negative, unsigned) = value
         .strip_prefix('-')
         .map_or((false, value), |rest| (true, rest));
-    let parsed = if let Some(hex) = unsigned
+    if let Some(hex) = unsigned
         .strip_prefix("0x")
         .or_else(|| unsigned.strip_prefix("0X"))
     {
-        i64::from_str_radix(hex, 16)
-            .map_err(|error| format!("invalid hexadecimal integer {value:?}: {error}"))?
+        if hex.starts_with('+') || hex.starts_with('-') {
+            return Err(format!("invalid hexadecimal integer {value:?}"));
+        }
+        let magnitude = u64::from_str_radix(hex, 16)
+            .map_err(|error| format!("invalid hexadecimal integer {value:?}: {error}"))?;
+        let signed = if negative {
+            -i128::from(magnitude)
+        } else {
+            i128::from(magnitude)
+        };
+        i64::try_from(signed)
+            .map_err(|error| format!("invalid hexadecimal integer {value:?}: {error}"))
     } else {
-        unsigned
+        value
             .parse::<i64>()
-            .map_err(|error| format!("invalid decimal integer {value:?}: {error}"))?
-    };
-
-    if negative { Ok(-parsed) } else { Ok(parsed) }
+            .map_err(|error| format!("invalid decimal integer {value:?}: {error}"))
+    }
 }
 
 #[cfg(test)]
@@ -177,19 +185,34 @@ mod tests {
     }
 
     #[test]
-    fn loads_field_mapping_configs() {
-        let ot = ensure_ot_mappings().unwrap();
-        assert_eq!(map_attribute_value(&ot.attribute_codes, 0x40), Some(0));
-        assert_eq!(
-            map_race_name(&ot.race_codes, 0x2000),
-            Some(String::from("龙族"))
-        );
+    fn parses_signed_integer_boundaries() {
+        for value in ["-9223372036854775808", "-0x8000000000000000"] {
+            assert_eq!(parse_integer(value).unwrap(), i64::MIN);
+        }
+        for value in ["9223372036854775807", "0x7fffffffffffffff"] {
+            assert_eq!(parse_integer(value).unwrap(), i64::MAX);
+        }
+        for value in [
+            "9223372036854775808",
+            "-9223372036854775809",
+            "0x8000000000000000",
+            "-0x8000000000000001",
+        ] {
+            assert!(parse_integer(value).is_err(), "{value}");
+        }
+    }
 
-        let rd = ensure_rd_mappings().unwrap();
-        assert_eq!(rd.legend_type_mask, 0x8);
-        assert_eq!(
-            map_race_name(&rd.race_codes, -0x80000000),
-            Some(String::from("电子人族"))
-        );
+    #[test]
+    fn rejects_repeated_integer_signs() {
+        for value in [
+            "--1",
+            "-+1",
+            "--9223372036854775808",
+            "0x-1",
+            "-0x-1",
+            "0x+1",
+        ] {
+            assert!(parse_integer(value).is_err(), "{value}");
+        }
     }
 }

@@ -1,14 +1,14 @@
 [package]
-name = "ygo-cards"
+name    = "ygo-cards"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [dependencies]
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
+anyhow     = "1"
+clap       = { version = "4", features = [ "derive" ] }
+reqwest    = { version = "0.13", default-features = false, features = [ "blocking", "rustls" ] }
+rusqlite   = { version = "0.41", features = [ "bundled" ] }
+serde      = { version = "1", features = [ "derive" ] }
 serde_json = "1"
-similar = "2.7"
+similar    = "3.2"

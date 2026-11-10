@@ -67,7 +67,12 @@ fn primary_type(type_flags: i64) -> Option<(CardKind, String)> {
     let mappings = ot_mappings();
     if primary.is_none()
         && type_flags & mappings.inferred_monster_type_mask != 0
-        && matched_subtype_flags(type_flags).len() > 1
+        && mappings
+            .subtype_flags
+            .iter()
+            .filter(|flag| type_flags & flag.mask != 0)
+            .nth(1)
+            .is_some()
     {
         primary = Some((CardKind::Monster, primary_label(CardKind::Monster)?));
     }
@@ -150,6 +155,18 @@ mod tests {
         assert_eq!(
             map_card_types(0x4011, 0),
             some_labels(&["怪兽", "衍生物", "通常"])
+        );
+    }
+
+    #[test]
+    fn infers_monsters_only_with_an_additional_subtype() {
+        assert_eq!(
+            map_card_types(0x4010, 0x8),
+            some_labels(&["怪兽", "恶魔族", "衍生物", "通常"])
+        );
+        assert_eq!(
+            map_card_types(0x6010, 0x8),
+            some_labels(&["怪兽", "恶魔族", "衍生物", "同调", "通常"])
         );
     }
 
